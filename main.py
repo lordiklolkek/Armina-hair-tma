@@ -166,9 +166,9 @@ async def telegram_api(method: str, payload: dict) -> dict:
         raise RuntimeError(f"Telegram {method} failed ({type(exc).__name__})") from None
     if not isinstance(result, dict):
         raise RuntimeError(f"Telegram {method}: invalid response")
-        if not result.get("ok"):
-            raise RuntimeError(f"Telegram {method}: {result.get('description')}")
-        return result.get("result")
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram {method}: {result.get('description')}")
+    return result.get("result")
 
 
 async def send_message_safely(chat_id: int | str, message: str, reply_markup: dict | None = None) -> None:
