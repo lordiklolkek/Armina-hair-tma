@@ -1,0 +1,24 @@
+# Demo only: Render Free has no persistent disk. Do not accept real bookings.
+services:
+  - type: web
+    name: armina-hair-tma-demo
+    runtime: python
+    plan: free
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: python -m uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: BOT_USERNAME
+        value: ArminaHair_Bot
+      - key: WEBHOOK_SECRET_SEED
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./salon.db
+      - key: SALON_NAME
+        value: Armina Hair
+      - key: SALON_ADDRESS
+        value: Демо-салон, Капан — адрес уточняется
