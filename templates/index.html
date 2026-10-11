@@ -1,1 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f9f6f2">
+  <meta name="color-scheme" content="light dark">
+  <title>Armina Hair — запись онлайн</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <button id="back-top" class="icon-button" aria-label="Назад" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5L7.5 12l7 7"/></svg>
+      </button>
+      <div class="brand" aria-label="Armina Hair">
+        <span class="brand-icon">✳</span><span class="brand-label">armina<span class="brand-dot">.</span></span>
+      </div>
+      <div class="top-pill"><span class="top-pill-dot"></span> ONLINE BOOKING</div>
+    </header>
 
+    <main>
+      <section class="hero" aria-label="Салон красоты">
+        <div class="hero-meta"><span>BEAUTY & SELF-CARE</span><span>✧ EST. 2026</span></div>
+        <h1>Ваше время<br><em>сиять.</em></h1>
+        <p>Красота начинается с заботы о себе. Выберите услугу — остальное мы организуем.</p>
+        <div class="hero-stamp" aria-hidden="true">✿</div>
+      </section>
+
+      <section class="booking-area">
+        <div class="progress-head">
+          <span class="progress-eyebrow" id="step-eyebrow">ШАГ 01 ИЗ 04</span>
+          <span class="progress-counter" id="step-counter">01 / 04</span>
+        </div>
+        <div class="progress-track" aria-label="Прогресс записи">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+
+        <section class="step" id="step-1" aria-labelledby="step-title-1">
+          <div class="section-heading"><div><p class="section-kicker">01 — SERVICES</p><h2 id="step-title-1">Выберите услугу</h2></div><span class="heading-sparkle">✳</span></div>
+          <p class="section-description">Найдём идеальный уход именно для вас.</p>
+          <div id="services" class="service-list" aria-live="polite"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+        </section>
+
+        <section class="step" id="step-2" aria-labelledby="step-title-2" hidden>
+          <div class="section-heading"><div><p class="section-kicker">02 — SPECIALISTS</p><h2 id="step-title-2">Ваш мастер</h2></div><span class="heading-sparkle">✳</span></div>
+          <p class="section-description">Доверьтесь любимому специалисту или выберите любого.</p>
+          <div class="master-grid" id="masters"></div>
+        </section>
+
+        <section class="step" id="step-3" aria-labelledby="step-title-3" hidden>
+          <div class="section-heading"><div><p class="section-kicker">03 — TIME & DATE</p><h2 id="step-title-3">Дата и время</h2></div><span class="heading-sparkle">✳</span></div>
+          <p class="section-description">Все часы указаны по времени Армении (UTC+4).</p>
+          <div class="calendar-panel">
+            <div class="calendar-nav">
+              <h3 id="calendar-month"></h3>
+              <div class="calendar-controls">
+                <button id="month-prev" class="icon-button small" aria-label="Предыдущий месяц">‹</button>
+                <button id="month-next" class="icon-button small" aria-label="Следующий месяц">›</button>
+              </div>
+            </div>
+            <div class="week-labels"><span>ПН</span><span>ВТ</span><span>СР</span><span>ЧТ</span><span>ПТ</span><span>СБ</span><span>ВС</span></div>
+            <div id="calendar-days" class="calendar-days" role="group" aria-label="Выбор даты"></div>
+          </div>
+          <div class="slots-header"><h3>Свободное время</h3><span class="timezone">Asia / Yerevan</span></div>
+          <div id="slots" class="time-slots" aria-live="polite"><p class="empty-message">Выберите дату в календаре</p></div>
+        </section>
+
+        <section class="step" id="step-4" aria-labelledby="step-title-4" hidden>
+          <div class="section-heading"><div><p class="section-kicker">04 — FINAL DETAILS</p><h2 id="step-title-4">Почти готово!</h2></div><span class="heading-sparkle">✳</span></div>
+          <p class="section-description">Проверьте детали и оставьте свои контакты.</p>
+          <div class="summary-card" id="summary"></div>
+          <form id="contact-form" novalidate>
+            <label for="client-name">Как к вам обращаться?</label>
+            <input id="client-name" name="name" type="text" autocomplete="name" minlength="2" maxlength="80" placeholder="Ваше имя" required>
+            <label for="client-phone">Телефон для связи</label>
+            <input id="client-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+374 00 000 000" required>
+            <p class="input-note">Передавая контакты, вы соглашаетесь, что салон использует их для организации записи.</p>
+          </form>
+        </section>
+
+        <section class="success" id="step-success" hidden>
+          <div class="success-mark">✓</div>
+          <p class="section-kicker">REQUEST RECEIVED</p>
+          <h2>Вы записались!</h2>
+          <p>Ваша заявка отправлена мастеру. После подтверждения мы сообщим вам в Telegram.</p>
+          <div id="success-details" class="success-details"></div>
+          <button id="book-another" class="secondary-button">Записаться ещё раз ↗</button>
+        </section>
+      </section>
+    </main>
+
+    <div class="floating-footer" id="booking-footer">
+      <div class="footer-content">
+        <div class="footer-price"><span id="footer-caption">ВАШ ВЫБОР</span><strong id="footer-total">—</strong></div>
+        <button id="next-button" class="primary-button" disabled><span id="next-label">Продолжить</span><span class="button-arrow">↗</span></button>
+      </div>
+      <div class="bottom-safe"></div>
+    </div>
+    <div role="status" aria-live="polite" id="toast" class="toast" hidden></div>
+  </div>
+</body>
+</html>

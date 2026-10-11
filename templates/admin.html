@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark"><title>Armina Hair · Управление</title>
+<link rel="stylesheet" href="/static/admin.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/admin.js" defer></script>
+</head>
+<body>
+<div class="shell">
+<header class="header"><div><span class="eyebrow">ARMINA HAIR · ADMIN</span><h1>Панель управления<span class="accent">.</span></h1><p>Записи, услуги, мастера и расписание</p></div><a href="/" class="open-app">↗ Запись</a></header>
+<nav class="tabs" aria-label="Разделы управления">
+<button class="tab active" data-tab="bookings">Записи</button><button class="tab" data-tab="services">Услуги</button><button class="tab" data-tab="masters">Мастера</button><button class="tab" data-tab="hours">График</button>
+</nav>
+<div id="notice" class="notice" role="status" hidden></div>
+<section id="dashboard" class="stats" aria-label="Статистика"><div class="stat"><span>Ожидают</span><strong id="stat-pending">—</strong></div><div class="stat"><span>Подтверждены</span><strong id="stat-confirmed">—</strong></div><div class="stat"><span>Отменены</span><strong id="stat-cancelled">—</strong></div></section>
+<main>
+<section class="panel" id="panel-bookings"><div class="panel-heading"><h2>Записи клиентов</h2><button class="ghost" id="refresh">↻ Обновить</button></div><div class="filters"><label>Дата <input type="date" id="filter-date"></label><label>Статус <select id="filter-status"><option value="">Все</option><option value="pending">Ожидают</option><option value="confirmed">Подтверждены</option><option value="cancelled">Отменены</option></select></label><button class="ghost" id="clear-filters">Сбросить</button></div><div id="booking-list" class="stack"></div></section>
+<section class="panel" id="panel-services" hidden><div class="panel-heading"><h2>Услуги и цены</h2><p>Изменения сразу отображаются у клиентов.</p></div><div class="split"><div id="service-list" class="stack"></div><form id="service-form" class="editor"><h3 id="service-form-title">Новая услуга</h3><label>Название<input name="title" required minlength="2" maxlength="100"></label><label>Описание<input name="description" maxlength="250"></label><div class="double"><label>Категория<input name="category" value="Волосы" required></label><label>Эмодзи<input name="icon" value="✂️" maxlength="10" required></label></div><div class="double"><label>Длительность, мин<input type="number" name="duration_minutes" value="60" step="15" min="15" max="480" required></label><label>Стоимость, ֏<input type="number" name="price_amd" value="5000" step="100" min="0" required></label></div><label class="check"><input type="checkbox" name="active" checked> Доступна для записи</label><div class="form-actions"><button type="button" id="service-reset" class="ghost">Новая</button><button type="submit" class="primary">Сохранить услугу</button></div></form></div></section>
+<section class="panel" id="panel-masters" hidden><div class="panel-heading"><h2>Команда</h2><p>Добавляйте мастеров и назначайте им услуги.</p></div><div class="split"><div id="master-list" class="stack"></div><form id="master-form" class="editor"><h3 id="master-form-title">Новый мастер</h3><label>Имя<input name="name" required minlength="2" maxlength="100"></label><label>Специализация<input name="specialty" value="Мастер" required></label><label>Инициалы<input name="initials" value="М" maxlength="5" required></label><fieldset><legend>Выполняет услуги</legend><div id="master-service-options" class="checks"></div></fieldset><label class="check"><input type="checkbox" name="active" checked> Принимает клиентов</label><div class="form-actions"><button type="button" id="master-reset" class="ghost">Новый</button><button class="primary" type="submit">Сохранить мастера</button></div></form></div></section>
+<section class="panel" id="panel-hours" hidden><div class="panel-heading"><h2>Расписание и выходные</h2><p>Изменения повлияют на доступные слоты. Уже созданные записи сохраняются — проверьте их перед сменой графика.</p></div><form id="hours-form" class="editor wide"><label>Мастер<select id="hours-master" required></select></label><div id="hours-grid" class="hours-grid"></div><label>Выходные даты (через запятую, ГГГГ-ММ-ДД)<textarea id="days-off" rows="2" placeholder="2026-12-31, 2027-01-01"></textarea></label><button class="primary" type="submit">Сохранить график</button></form></section>
+</main><footer>Демо-салон · Цена и адрес должны быть подтверждены перед запуском</footer>
+</div>
+</body>
+</html>
