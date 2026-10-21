@@ -216,3 +216,46 @@ test('concurrent date edits and bookings cannot overwrite each other or leave vi
  const results=await Promise.all([override(nextDay,[{start_minute:600,end_minute:720}]),override(nextDay,[{start_minute:900,end_minute:1020}])]);
  assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
 });
+
+test('calendar scopes staff to own visits, keeps archived history and bounds date ranges',async()=>{
+ await book(101);await book(102,slot(11),'calendar_other','demo-b');const day=dayOf(slot()),query=`from=${day}&to=${day}`;
+ assert.equal((await request('/api/calendar?'+query,101)).status,403);
+ assert.equal(((await (await request('/api/calendar?'+query,1)).json() as Row).items as Row[]).length,2);
+ await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ const own=(await (await request('/api/calendar?'+query,201)).json() as Row).items as Row[];assert.equal(own.length,1);assert.equal(own[0].barber_id,'demo-a');
+ assert.equal((await request('/api/calendar?'+query+'&barber_id=demo-b',201)).status,403);
+ assert.equal((await request('/api/calendar?'+query+'&cursor=invalid',1)).status,422);
+ assert.equal((await request(`/api/calendar?from=${day}&to=${dayOf(slot()+31*86400)}`,1)).status,422);
+ assert.equal((await request('/api/owner/barbers/demo-a',1,'PATCH',{version:1,archived:true,future_action:'keep'})).status,200);
+ assert.equal(((await (await request('/api/calendar?'+query+'&barber_id=demo-a',1)).json() as Row).items as Row[]).length,1);
+ assert.equal((await request('/api/calendar?'+query,201)).status,403);
+});
+test('calendar keyset pagination returns all 101 same-day appointments without duplicates',async()=>{
+ await request('/api/me',1);await db.prepare("INSERT INTO clients(id,name) VALUES('calendar-a','Demo A'),('calendar-b','Demo B')").run();
+ const records=Array.from({length:101},(_,i)=>{let minutes=Math.floor(i/2)*5;if(minutes>=240)minutes+=60;return {id:`cal-${i}`,client:i%2?'calendar-b':'calendar-a',barber:i%2?'demo-b':'demo-a',start:slot()+minutes*60};});
+ await db.prepare(`INSERT INTO bookings(id,client_id,barber_id,service_id,title_hy,title_ru,price_min,price_max,starts_at,ends_at,status,source,created_by,idempotency_key,request_hash)
+  SELECT json_extract(j.value,'$.id'),json_extract(j.value,'$.client'),json_extract(j.value,'$.barber'),s.id,s.title_hy,s.title_ru,s.price_min,s.price_max,
+  json_extract(j.value,'$.start'),json_extract(j.value,'$.start')+300,'confirmed','manual',1,'calendar_key_'||j.key,'test'
+  FROM json_each(?) j CROSS JOIN services s WHERE s.id='cut'`).bind(JSON.stringify(records)).run();
+ const day=dayOf(slot()),path=`/api/calendar?from=${day}&to=${day}`;
+ const first=await (await request(path,1)).json() as Row;assert.equal(first.items.length,100);assert(first.next_cursor);
+ const second=await (await request(path+'&cursor='+encodeURIComponent(first.next_cursor),1)).json() as Row;assert.equal(second.items.length,1);assert.equal(second.next_cursor,null);
+ assert.equal(new Set([...first.items,...second.items].map((b:Row)=>b.id)).size,101);
+ const filtered=await (await request(path+'&barber_id=demo-a',1)).json() as Row;assert.equal(filtered.items.length,51);
+});
+test('owner block/unblock is atomic, preserves existing visits and rejects stale moderation',async()=>{
+ const booking=await (await book(101)).json() as Row,path=`/api/owner/clients/${encodeURIComponent(booking.client_id)}/access`;
+ assert.equal((await request('/api/owner/clients',101)).status,403);
+ assert.equal((await request(path,101,'PATCH',{blocked:true,expected_blocked:false})).status,403);
+ assert.equal((await request(path,1,'PATCH',{blocked:true,expected_blocked:false})).status,200);
+ assert.equal((await db.prepare('SELECT status FROM bookings WHERE id=?').bind(booking.id).first<Row>())!.status,'confirmed');
+ let denied=await book(101,slot(11),'blocked_client');assert.equal(denied.status,409);assert.equal((await denied.json() as Row).error,'CLIENT_BLOCKED');
+ assert.equal((await request(`/api/bookings/${booking.id}`,101,'PATCH',{version:1,status:'cancelled'})).status,200);
+ assert.equal((await request(path,1,'PATCH',{blocked:false,expected_blocked:false})).status,409);
+ const list=await (await request('/api/owner/clients',1)).json() as Row;assert.equal(list.items[0].blocked,1);assert.equal(list.items[0].no_show_count,0);
+ assert.equal((await request(path,1,'PATCH',{blocked:false,expected_blocked:true})).status,200);
+ assert.equal((await book(101,slot(11),'unblocked_client')).status,201);
+ const manual=await (await request('/api/manual-bookings',1,'POST',{service_id:'cut',barber_id:'demo-b',starts_at:slot()},'manual_client_access')).json() as Row;
+ const manualAccess=await request(`/api/owner/clients/${manual.client_id}/access`,1,'PATCH',{blocked:true,expected_blocked:false});assert.equal(manualAccess.status,409);assert.equal((await manualAccess.json() as Row).error,'MANUAL_CLIENT');
+ assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action IN('client.block','client.unblock')").first<Row>())!.n,2);
+});
