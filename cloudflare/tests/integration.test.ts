@@ -67,6 +67,45 @@ test('idempotency handles concurrent double click and rejects changed payload',a
  assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,1);
  assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first<Row>())!.n,1);
 });
+test('localized notification snapshots survive catalog edits and use recipient language at delivery',async()=>{
+ await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ const b=await (await book(101)).json() as Row;
+ await request('/api/me/language',101,'PUT',{language:'ru'});
+ await db.prepare("UPDATE services SET title_ru='Изменённая услуга',price_min=9000,price_max=9000 WHERE id='cut'").run();
+ const sent:Row[]=[];await runNotifications(env,async(_env,method,payload)=>{assert.equal(method,'sendMessage');sent.push(payload as Row);return {ok:true,code:200,retry_after:0};});
+ assert.equal(sent.length,2);const client=sent.find(s=>s.chat_id===101)!,barber=sent.find(s=>s.chat_id===201)!;
+ assert(client.text.startsWith('Запись подтверждена\nСтрижка'));assert.match(client.text,/2\s000 ֏/);assert(!client.text.includes('Изменённая услуга'));
+ assert(barber.text.startsWith('Նոր գրանցում'));assert(!barber.text.includes('confirmed'));assert(!('parse_mode' in client));
+ assert.equal((await db.prepare('SELECT count(*) n FROM outbox WHERE booking_id=? AND state=\'sent\'').bind(b.id).first<Row>())!.n,2);
+});
+test('cancel supersedes queued creation; revoked staff receives no queued details',async()=>{
+ await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ const b=await (await book(101)).json() as Row;
+ assert.equal((await request('/api/bookings/'+b.id,101,'PATCH',{version:1,status:'cancelled'})).status,200);
+ await db.prepare("UPDATE barbers SET telegram_id=NULL WHERE id='demo-a'").run();
+ const sent:Row[]=[];await runNotifications(env,async(_env,_method,payload)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};});
+ assert.equal(sent.length,1);assert.equal(sent[0].chat_id,101);assert(sent[0].text.startsWith('Գրանցումը չեղարկված է'));
+ const rows=(await db.prepare('SELECT state,last_error FROM outbox WHERE booking_id=?').bind(b.id).all<Row>()).results;
+ assert.equal(rows.filter(r=>r.last_error==='SUPERSEDED').length,2);assert.equal(rows.filter(r=>r.last_error==='ACCESS_REVOKED').length,1);
+});
+test('reminders render the correct language and window without repeated delivery',async()=>{
+ await db.prepare('DELETE FROM working_hours').run();
+ for(let day=0;day<7;day++)await db.prepare("INSERT INTO working_hours(id,barber_id,weekday,start_minute,end_minute) VALUES(?,'demo-a',?,0,1440)").bind('reminder-day-'+day,day).run();
+ function near(hours:number){let time=Math.ceil((Date.now()/1000+hours*3600)/300)*300;const minute=(time+14400)%86400/60;if(minute>1410)time+=(1440-minute)*60;return time;}
+ const short=await (await book(101,near(1.2),'reminder_short')).json() as Row,day=await (await book(102,near(20),'reminder_day')).json() as Row;
+ assert(short.id&&day.id);await request('/api/me/language',101,'PUT',{language:'ru'});
+ await db.prepare("UPDATE outbox SET state='sent'").run();
+ const sent:Row[]=[];const sender=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
+ await runNotifications(env,sender);assert.equal(sent.length,2);assert(sent.find(s=>s.chat_id===101)!.text.startsWith('Скоро ваш визит'));assert(sent.find(s=>s.chat_id===102)!.text.startsWith('Գրանցման հիշեցում'));
+ await runNotifications(env,sender);assert.equal(sent.length,2);
+ const rows=(await db.prepare("SELECT id,event_json FROM outbox WHERE id LIKE '%:reminder:%'").all<Row>()).results;assert.equal(rows.length,2);assert(rows.some(r=>r.id===short.id+':1:reminder:2h'));assert(rows.some(r=>r.id===day.id+':1:reminder:24h'));
+});
+test('webhook replies use saved language and absent bot username cannot issue a broken invitation',async()=>{
+ await request('/api/me/language',101,'PUT',{language:'ru'});
+ await processWebhook(env,secret,{update_id:780,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
+ const reply=await db.prepare("SELECT text FROM outbox WHERE id='update:780'").first<Row>();assert(reply!.text.includes('Реальные записи не принимаются'));assert(!reply!.text.includes('Ոչ պաշտոնական'));
+ const r=await request('/api/owner/barbers/demo-a/invitation',1,'POST',{},undefined,{BOT_USERNAME:''});assert.equal(r.status,409);assert.equal((await r.json() as Row).error,'TELEGRAM_NOT_CONFIGURED');
+});
 test('new client limit is atomic even across two barbers',async()=>{
  const results=await Promise.all([book(101,slot(),'first_001','demo-a'),book(101,slot(11),'first_002','demo-b')]);
  assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);
@@ -121,6 +160,57 @@ test('archive requires acknowledgement, preserves history and revokes staff acce
  assert.equal((await request('/api/staff/demo-a/schedule',201)).status,403);
  assert.equal((await book(102,slot(11))).status,409);
  assert(await db.prepare('SELECT id FROM bookings WHERE id=?').bind(created.id).first());
+});
+test('retirement cancellation checks the reviewed revision even when the visit count is unchanged',async()=>{
+ const first=await (await book(101)).json() as Row;
+ const reviewed=await (await request('/api/owner/barbers/demo-a/future-bookings',1)).json() as Row;
+ assert.equal(reviewed.barber.future_count,1);assert.equal(reviewed.items[0].id,first.id);
+ assert.equal((await request('/api/owner/barbers/demo-a/future-bookings',101)).status,403);
+ const body={version:reviewed.barber.version,archived:true,future_action:'cancel',expected_future_count:1,expected_bookings_revision:reviewed.barber.bookings_revision};
+ assert.equal((await request('/api/owner/barbers/demo-a',1,'PATCH',{version:1,archived:true,future_action:'cancel'})).status,422);
+ assert.equal((await request('/api/bookings/'+first.id,101,'PATCH',{version:1,status:'cancelled'})).status,200);
+ const second=await (await book(102,slot(11),'retire_new')).json() as Row;
+ assert.equal((await request('/api/owner/barbers/demo-a',1,'PATCH',body)).status,409);
+ assert.equal((await db.prepare('SELECT status FROM bookings WHERE id=?').bind(second.id).first<Row>())!.status,'confirmed');
+ const current=await (await request('/api/owner/barbers/demo-a/future-bookings',1)).json() as Row;
+ assert.equal((await request('/api/owner/barbers/demo-a',1,'PATCH',{...body,expected_bookings_revision:current.barber.bookings_revision})).status,200);
+ assert.equal((await db.prepare("SELECT archived,telegram_id FROM barbers WHERE id='demo-a'").first<Row>())!.archived,1);
+ assert.equal((await db.prepare('SELECT status FROM bookings WHERE id=?').bind(second.id).first<Row>())!.status,'cancelled');
+ assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,2);
+ const notice=await db.prepare('SELECT event_json FROM outbox WHERE booking_id=? AND state=\'pending\'').bind(second.id).first<Row>();assert.equal(JSON.parse(notice!.event_json).kind,'cancelled');
+ assert.equal((await request('/api/owner/barbers/demo-a',1,'PATCH',{...body,expected_bookings_revision:current.barber.bookings_revision})).status,409);
+});
+test('concurrent retirement and new booking either closes the profile or requires a fresh review',async()=>{
+ const first=await (await book(101)).json() as Row;
+ const snapshot=await (await request('/api/owner/barbers/demo-a/future-bookings',1)).json() as Row;
+ const [retired,created]=await Promise.all([request('/api/owner/barbers/demo-a',1,'PATCH',{version:snapshot.barber.version,archived:true,future_action:'cancel',expected_future_count:1,expected_bookings_revision:snapshot.barber.bookings_revision}),book(102,slot(11),'retire_race')]);
+ assert([200,409].includes(retired.status));const barber=await db.prepare("SELECT archived FROM barbers WHERE id='demo-a'").first<Row>();
+ if(retired.status===200){assert.equal(created.status,409);assert.equal(barber!.archived,1);assert.equal((await db.prepare("SELECT count(*) n FROM bookings WHERE status='confirmed'").first<Row>())!.n,0);}
+ else{assert.equal(created.status,201);assert.equal(barber!.archived,0);assert.equal((await db.prepare('SELECT status FROM bookings WHERE id=?').bind(first.id).first<Row>())!.status,'confirmed');}
+});
+test('owner transfers a visit with snapshots intact and notifies client plus both active barbers',async()=>{
+ for(const [id,name]of [[201,'demo-a'],[202,'demo-b']] as const){await request('/api/me',id);await db.prepare('UPDATE barbers SET telegram_id=? WHERE id=?').bind(id,name).run();}
+ const b=await (await book(101,slot(),'transfer_book','demo-a','shave')).json() as Row;
+ await db.prepare("UPDATE barber_services SET duration=60 WHERE barber_id='demo-b' AND service_id='shave'").run();
+ await db.prepare("UPDATE barbers SET online_enabled=0 WHERE id='demo-b'").run();
+ await db.prepare("UPDATE services SET active=0 WHERE id='shave'").run();
+ const query='/api/slots?'+new URLSearchParams({date:new Date((slot()+14400)*1000).toISOString().slice(0,10),service_id:'shave',barber_id:'demo-b',booking_id:b.id});
+ assert.equal((await request(query,101)).status,422);assert.equal((await request(query,1)).status,200);
+ assert.equal((await request('/api/bookings/'+b.id,201,'PATCH',{version:1,barber_id:'demo-b'})).status,403);
+ assert.equal((await request('/api/bookings/'+b.id,1,'PATCH',{version:1,barber_id:'demo-b'})).status,200);
+ const saved=await db.prepare('SELECT * FROM bookings WHERE id=?').bind(b.id).first<Row>();assert.equal(saved!.barber_id,'demo-b');assert.equal(saved!.ends_at-saved!.starts_at,b.ends_at-b.starts_at);assert.equal(saved!.price_max,b.price_max);assert.equal(saved!.title_hy,b.title_hy);
+ const sent:Row[]=[];await runNotifications(env,async(_env,_method,payload)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};});
+ assert.deepEqual(sent.map(s=>s.chat_id).sort((a,b)=>a-b),[101,201,202]);assert(sent.find(s=>s.chat_id===201)!.text.startsWith('Այցը փոխանցվել է այլ վարպետի'));
+});
+test('conflicting or unsupported transfer rolls back assignment, queue and booking revision',async()=>{
+ const b=await (await book(101)).json() as Row;assert.equal((await book(102,slot(),'transfer_busy','demo-b')).status,201);
+ const before=await db.prepare("SELECT bookings_revision FROM barbers WHERE id='demo-a'").first<Row>();
+ assert.equal((await request('/api/bookings/'+b.id,1,'PATCH',{version:1,barber_id:'demo-b'})).status,409);
+ await db.prepare("DELETE FROM barber_services WHERE barber_id='demo-c' AND service_id='cut'").run();
+ assert.equal((await request('/api/bookings/'+b.id,1,'PATCH',{version:1,barber_id:'demo-c'})).status,409);
+ const saved=await db.prepare('SELECT * FROM bookings WHERE id=?').bind(b.id).first<Row>();assert.equal(saved!.version,1);assert.equal(saved!.barber_id,'demo-a');
+ assert.equal((await db.prepare("SELECT bookings_revision FROM barbers WHERE id='demo-a'").first<Row>())!.bookings_revision,before!.bookings_revision);
+ assert.equal((await db.prepare('SELECT count(*) n FROM outbox WHERE booking_id=?').bind(b.id).first<Row>())!.n,1);
 });
 test('one-time invitations bind only an allowed private Telegram account',async()=>{
  const invite=await (await request('/api/owner/barbers/demo-a/invitation',1,'POST',{})).json() as Row;
