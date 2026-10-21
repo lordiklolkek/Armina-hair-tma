@@ -15,6 +15,7 @@ app.use('/telegram/*',bodyLimit({maxSize:32768,onError:c=>c.json({error:'BODY_TO
 app.onError((err,c)=>{
  if(err instanceof HTTPException)return c.json({error:err.message},err.status);
  if(err instanceof ZodError||err instanceof SyntaxError)return c.json({error:'INVALID_INPUT'},422);
+ if(String(err).includes('INVALID_SCHEDULE'))return c.json({error:'INVALID_SCHEDULE'},422);
  const known=['BOOKING_CONFLICT','BOOKING_LIMIT','CLIENT_BLOCKED','ABSENCE_CONFLICT','OUTSIDE_SCHEDULE','BARBER_UNAVAILABLE','SCHEDULE_CONFLICT'];
  const code=known.find(code=>String(err).includes(code));
  if(code)return c.json({error:code},409);
@@ -25,7 +26,8 @@ app.onError((err,c)=>{
  return c.json({error:'SERVICE_UNAVAILABLE'},503);
 });
 app.get('/health',async c=>{try{await c.env.DB.prepare('SELECT 1').first();return c.json({ok:true,mode:'demo'});}catch{return c.json({ok:false},503);}});
-app.get('/api/config',async c=>c.json({...await c.env.DB.prepare('SELECT * FROM settings WHERE id=1').first(),mode:'demo',timezone:'Asia/Yerevan',currency:'AMD',real_bookings:false}));
+app.get('/api/config',async c=>c.json({...await c.env.DB.prepare('SELECT * FROM settings WHERE id=1').first(),mode:'demo',timezone:'Asia/Yerevan',currency:'AMD',real_bookings:false,
+ telegram_app_url:/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}(?:\/[A-Za-z0-9_]{1,64})?$/.test(c.env.MINI_APP_URL||'')?c.env.MINI_APP_URL:''}));
 app.get('/api/catalog',async c=>{
  const [services,barbers,links,away]=await c.env.DB.batch([
   c.env.DB.prepare('SELECT * FROM services WHERE active=1 ORDER BY sort_order,id'),

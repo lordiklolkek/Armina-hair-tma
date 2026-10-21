@@ -26,7 +26,8 @@ export async function getSlots(env:Env,serviceId:string,day:string,barberId:stri
  WHERE s.id=? AND s.active=1 AND b.active=1 AND b.archived=0 AND (?=1 OR b.online_enabled=1) AND (? IS NULL OR b.id=?) ORDER BY b.id`).bind(reschedule?(reschedule.ends_at-reschedule.starts_at)/60:null,serviceId,Number(manual),barberId,barberId).all<Row>()).results;
  const weekday=(new Date((start+14400)*1000).getUTCDay()+6)%7;
  const [hours,busy,away]=await env.DB.batch([
-  env.DB.prepare('SELECT * FROM working_hours WHERE weekday=?').bind(weekday),
+  env.DB.prepare(`SELECT w.* FROM effective_working_hours w WHERE w.day=? OR (w.day IS NULL AND w.weekday=?
+   AND NOT EXISTS(SELECT 1 FROM schedule_overrides o WHERE o.barber_id=w.barber_id AND o.day=?))`).bind(day,weekday,day),
   env.DB.prepare("SELECT barber_id,starts_at,ends_at FROM bookings WHERE status IN('confirmed','pending') AND starts_at<? AND ends_at>? AND (? IS NULL OR id!=?)").bind(start+86400,start,reschedule?.id||null,reschedule?.id||null),
   env.DB.prepare('SELECT barber_id,starts_at,ends_at FROM absences WHERE starts_at<? AND ends_at>?').bind(start+86400,start)
  ]);

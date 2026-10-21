@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppEnv, Row } from './types';
 import { ownerOnly, digest } from './auth';
-import { audit, guard, nowSeconds } from './booking';
+import { audit, guard, nowSeconds, dayInput, dayStart, localDay } from './booking';
 
 export const staff=new Hono<AppEnv>();
 function scope(c:any,id:string){const who=c.get('identity');if(!who.owner&&who.barberId!==id)throw new HTTPException(403,{message:'FORBIDDEN'});}
@@ -62,9 +62,10 @@ staff.post('/owner/barbers/:id/invitation',ownerOnly,async c=>{
 });
 staff.get('/staff/:id/schedule',async c=>{
  const id=c.req.param('id');scope(c,id);
- const [hours,absences]=await c.env.DB.batch([c.env.DB.prepare('SELECT weekday,start_minute,end_minute FROM working_hours WHERE barber_id=? ORDER BY weekday,start_minute').bind(id),
- c.env.DB.prepare('SELECT * FROM absences WHERE barber_id=? ORDER BY starts_at').bind(id)]);
- return c.json({hours:hours.results,absences:absences.results});
+ const [hours,absences,overrides]=await c.env.DB.batch([c.env.DB.prepare('SELECT weekday,start_minute,end_minute FROM working_hours WHERE barber_id=? ORDER BY weekday,start_minute').bind(id),
+ c.env.DB.prepare('SELECT * FROM absences WHERE barber_id=? ORDER BY starts_at').bind(id),
+ c.env.DB.prepare('SELECT day,hours_json,version FROM schedule_overrides WHERE barber_id=? AND day>=? ORDER BY day LIMIT 366').bind(id,localDay(nowSeconds()))]);
+ return c.json({hours:hours.results,absences:absences.results,overrides:overrides.results.map((o:any)=>({day:o.day,hours:JSON.parse(o.hours_json),version:o.version}))});
 });
 staff.put('/staff/:id/schedule',async c=>{
  const id=c.req.param('id');scope(c,id);
@@ -74,11 +75,30 @@ staff.put('/staff/:id/schedule',async c=>{
  await c.env.DB.batch([
   c.env.DB.prepare('DELETE FROM working_hours WHERE barber_id=?').bind(id),
   ...d.hours.map(h=>c.env.DB.prepare('INSERT INTO working_hours(id,barber_id,weekday,start_minute,end_minute) VALUES(?,?,?,?,?)').bind(crypto.randomUUID(),id,h.weekday,h.start_minute,h.end_minute)),
-  ...guard(c.env.DB,`NOT EXISTS(SELECT 1 FROM bookings b WHERE b.barber_id=? AND b.status IN('confirmed','pending') AND b.ends_at>unixepoch() AND NOT EXISTS(
-   SELECT 1 FROM working_hours w WHERE w.barber_id=b.barber_id AND w.weekday=(CAST(strftime('%w',b.starts_at,'unixepoch','+4 hours') AS INTEGER)+6)%7
-   AND b.starts_at>=unixepoch(date(b.starts_at,'unixepoch','+4 hours')||'T00:00:00+04:00')+w.start_minute*60
-   AND b.ends_at<=unixepoch(date(b.starts_at,'unixepoch','+4 hours')||'T00:00:00+04:00')+w.end_minute*60))`,id),
+  ...guard(c.env.DB,'NOT EXISTS(SELECT 1 FROM booking_schedule_violations WHERE barber_id=?)',id),
   audit(c.env.DB,c.get('identity').id,'schedule.update',id)
+ ]);
+ return c.json({ok:true});
+});
+const dateHours=z.array(z.object({start_minute:z.number().int().min(0).max(1435).multipleOf(5),end_minute:z.number().int().min(5).max(1440).multipleOf(5)}).strict().refine(v=>v.end_minute>v.start_minute)).max(8)
+ .refine(hours=>{const sorted=[...hours].sort((a,b)=>a.start_minute-b.start_minute);return !sorted.some((h,i)=>i>0&&h.start_minute<sorted[i-1].end_minute);});
+staff.put('/staff/:id/schedule/dates/:day',async c=>{
+ const id=c.req.param('id');scope(c,id);const day=dayInput.parse(c.req.param('day'));
+ const d=z.object({hours:dateHours,version:z.number().int().positive().nullable().default(null)}).strict().parse(await c.req.json());
+ const today=dayStart(localDay(nowSeconds()));if(dayStart(day)<today||dayStart(day)>today+365*86400)throw new HTTPException(422,{message:'DATE_UNAVAILABLE'});
+ await c.env.DB.batch([
+  ...guard(c.env.DB,d.version===null?'NOT EXISTS(SELECT 1 FROM schedule_overrides WHERE barber_id=? AND day=?)':'EXISTS(SELECT 1 FROM schedule_overrides WHERE barber_id=? AND day=? AND version=?)',id,day,...(d.version===null?[]:[d.version])),
+  c.env.DB.prepare('INSERT INTO schedule_overrides(barber_id,day,hours_json) VALUES(?,?,?) ON CONFLICT(barber_id,day) DO UPDATE SET hours_json=excluded.hours_json,version=schedule_overrides.version+1').bind(id,day,JSON.stringify(d.hours)),
+  audit(c.env.DB,c.get('identity').id,'schedule.date.update',id+':'+day)
+ ]);
+ return c.json({ok:true,version:(d.version||0)+1});
+});
+staff.delete('/staff/:id/schedule/dates/:day',async c=>{
+ const id=c.req.param('id');scope(c,id);const day=dayInput.parse(c.req.param('day'));
+ const d=z.object({version:z.number().int().positive()}).strict().parse(await c.req.json());
+ await c.env.DB.batch([
+  ...guard(c.env.DB,'EXISTS(SELECT 1 FROM schedule_overrides WHERE barber_id=? AND day=? AND version=?)',id,day,d.version),
+  c.env.DB.prepare('DELETE FROM schedule_overrides WHERE barber_id=? AND day=?').bind(id,day),audit(c.env.DB,c.get('identity').id,'schedule.date.remove',id+':'+day)
  ]);
  return c.json({ok:true});
 });
