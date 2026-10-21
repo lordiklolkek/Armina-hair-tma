@@ -6,6 +6,7 @@ import type { AppEnv, Env, Row } from './types';
 import { authenticate, ownerOnly, equal } from './auth';
 import { createBooking, bookingInput, getSlots, dayInput, allowedDate, audit, guard, nowSeconds } from './booking';
 import { staff } from './staff';
+import { calendar } from './calendar';
 import { processWebhook, runNotifications } from './telegram';
 
 export const app=new Hono<AppEnv>();
@@ -87,6 +88,7 @@ app.patch('/api/bookings/:id',async c=>{
  return c.json({ok:true,version:d.version+1});
 });
 app.route('/api',staff);
+app.route('/api',calendar);
 app.get('/api/owner/diagnostics',ownerOnly,async c=>c.json((await c.env.DB.prepare('SELECT state,count(*) count FROM outbox GROUP BY state').all()).results));
 app.put('/api/owner/settings',ownerOnly,async c=>{
  const d=z.object({name:z.string().trim().min(1).max(100),address:z.string().trim().min(1).max(250),logo_url:z.url().refine(v=>new URL(v).protocol==='https:').nullable(),advance_days:z.number().int().min(1).max(90),notice_minutes:z.number().int().min(0).max(1440)}).strict().parse(await c.req.json());

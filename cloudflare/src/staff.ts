@@ -138,3 +138,24 @@ staff.put('/staff/:id/notes/:client',async c=>{
  await c.env.DB.batch([c.env.DB.prepare('INSERT INTO notes(barber_id,client_id,text) VALUES(?,?,?) ON CONFLICT(barber_id,client_id) DO UPDATE SET text=excluded.text').bind(id,c.req.param('client'),d.text),audit(c.env.DB,c.get('identity').id,'note.update',c.req.param('client'))]);
  return c.json({ok:true});
 });
+staff.get('/owner/clients',ownerOnly,async c=>{
+ const cursor=z.string().max(100).regex(/^[A-Za-z0-9:_-]*$/).parse(c.req.query('cursor')||'');
+ const rows=(await c.env.DB.prepare(`SELECT c.id,c.name,c.phone,CASE WHEN c.telegram_id IS NULL THEN 0 ELSE 1 END has_telegram,
+  COALESCE(u.blocked,0) blocked,(SELECT count(*) FROM bookings b WHERE b.client_id=c.id AND b.status='completed') completed_count,
+  (SELECT count(*) FROM bookings b WHERE b.client_id=c.id AND b.status='no_show') no_show_count
+  FROM clients c LEFT JOIN users u ON u.telegram_id=c.telegram_id WHERE c.id>? ORDER BY c.id LIMIT 101`).bind(cursor).all<Row>()).results;
+ const items=rows.slice(0,100);return c.json({items,next_cursor:rows.length>100?items.at(-1)!.id:null});
+});
+staff.patch('/owner/clients/:id/access',ownerOnly,async c=>{
+ const id=z.string().min(1).max(100).parse(c.req.param('id'));
+ const d=z.object({blocked:z.boolean(),expected_blocked:z.boolean()}).strict().parse(await c.req.json());
+ const client=await c.env.DB.prepare('SELECT telegram_id FROM clients WHERE id=?').bind(id).first<Row>();
+ if(!client)throw new HTTPException(404,{message:'NOT_FOUND'});
+ if(!client.telegram_id)throw new HTTPException(409,{message:'MANUAL_CLIENT'});
+ await c.env.DB.batch([
+  ...guard(c.env.DB,'EXISTS(SELECT 1 FROM users WHERE telegram_id=? AND blocked=?)',client.telegram_id,Number(d.expected_blocked)),
+  c.env.DB.prepare('UPDATE users SET blocked=? WHERE telegram_id=?').bind(Number(d.blocked),client.telegram_id),
+  audit(c.env.DB,c.get('identity').id,d.blocked?'client.block':'client.unblock',id)
+ ]);
+ return c.json({ok:true});
+});
