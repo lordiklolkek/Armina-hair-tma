@@ -1,0 +1,28 @@
+name: Cloudflare demo checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  cloudflare:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: cloudflare/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+      - run: node --check public/app.js
+      - run: node --check public/i18n.js
+      - run: pnpm build
