@@ -1,0 +1,6 @@
+{
+ "name":"barbershop-37-local-ui-test","main":"ui-fixture.ts","compatibility_date":"2026-10-22","workers_dev":false,
+ "assets":{"directory":"../public","binding":"ASSETS","run_worker_first":true},
+ "vars":{"APP_MODE":"demo","OWNER_IDS":"1","DEMO_USER_IDS":"1","BOT_USERNAME":"TestOnly_Bot","BOT_TOKEN":"123456:LOCAL_TEST_ONLY_NOT_A_REAL_BOT"},
+ "d1_databases":[{"binding":"DB","database_name":"barbershop-37-demo","database_id":"00000000-0000-0000-0000-000000000000"}]
+}
