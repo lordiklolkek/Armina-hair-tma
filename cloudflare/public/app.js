@@ -91,26 +91,27 @@ function renderBooking(){
 async function renderBookings(scope,target=root,barberId=null){
  if(target===root)heading(scope==='all'?t('allBookings'):scope==='staff'?t('staff'):t('my'));
  const records=await api('/bookings?scope='+scope),bookings=barberId?records.filter(b=>b.barber_id===barberId):records;if(!bookings.length)target.append(el('p',t('empty'),'muted'));
- for(const booking of bookings){
+ for(const booking of bookings)target.append(bookingCard(booking,scope));
+}
+function bookingCard(booking,scope,refresh=render){
   const card=el('article',null,'card');card.append(el('span',t(booking.status),'status'),el('h3',title(booking)),el('p',`${dateText(booking.starts_at)} · ${timeText(booking.starts_at)}`),el('p',booking.barber_name,'muted'),el('p',price(booking),'muted'));if(scope!=='mine')card.append(el('p',booking.client_name));
   const actions=el('div',null,'actions');
   if(['confirmed','pending'].includes(booking.status)){
-   actions.append(button(t('cancel'),async()=>{if(!window.confirm(t('deleteConfirm')))return;await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status:'cancelled'});await render();}));
+   actions.append(button(t('cancel'),async()=>{if(!window.confirm(t('deleteConfirm')))return;await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status:'cancelled'});await refresh();}));
    actions.append(button(t('move'),()=>{state.editing=booking;state.manual=false;state.service={...booking,id:booking.service_id,duration:(booking.ends_at-booking.starts_at)/60};state.barber=booking.barber_id;state.view='services';state.step=3;return render();}));
-   if(scope!=='mine')for(const status of [...(booking.status==='pending'?['confirmed']:[]),'completed','no_show'])actions.append(button(t(status),async()=>{await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status});await render();}));
+   if(scope!=='mine')for(const status of [...(booking.status==='pending'?['confirmed']:[]),'completed','no_show'])actions.append(button(t(status),async()=>{await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status});await refresh();}));
   }
   if(scope==='mine')actions.append(button(t('repeat'),()=>{state.service=state.catalog.services.find(s=>s.id===booking.service_id);if(!state.service)return newFlow();state.view='services';state.step=2;state.editing=null;state.manual=false;return render();}));
   card.append(actions);
   if(scope!=='mine'&&['confirmed','pending'].includes(booking.status)){
-   const details=el('details');details.append(el('summary',t('edit')));const f=el('form');input(f,t('finalPrice'),'final_price',booking.final_price??'','number');const extra=input(f,t('extraTime'),'extra_minutes',0,'number');extra.min='0';extra.max='120';extra.step='5';formSave(f,async d=>{await api('/bookings/'+booking.id,'PATCH',{version:booking.version,extra_minutes:Number(d.get('extra_minutes')),...(d.get('final_price')!==''?{final_price:Number(d.get('final_price'))}:{})});await render();});details.append(f);card.append(details);
+   const details=el('details');details.append(el('summary',t('edit')));const f=el('form');input(f,t('finalPrice'),'final_price',booking.final_price??'','number');const extra=input(f,t('extraTime'),'extra_minutes',0,'number');extra.min='0';extra.max='120';extra.step='5';formSave(f,async d=>{await api('/bookings/'+booking.id,'PATCH',{version:booking.version,extra_minutes:Number(d.get('extra_minutes')),...(d.get('final_price')!==''?{final_price:Number(d.get('final_price'))}:{})});await refresh();});details.append(f);card.append(details);
   }
-  target.append(card);
- }
+  return card;
 }
 async function renderOwner(){
  heading(t('owner'));const subnav=el('div',null,'actions');root.append(subnav);const panel=el('div');root.append(panel);
  async function show(action){panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}}
- subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('allBookings'),()=>show(()=>renderBookings('all',panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))));
+ subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('calendar'),()=>show(()=>renderCalendar(panel))),button(t('clients'),()=>show(()=>ownerClients(panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))));
  await show(()=>ownerBarbers(panel));
 }
 async function ownerBarbers(panel){
@@ -152,12 +153,53 @@ async function ownerSettings(panel){
 async function renderStaff(id){
  state.staffId=id;heading(t('staff'));const nav=el('div',null,'actions'),panel=el('div');root.append(nav,panel);
  const show=async action=>{panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}};
- nav.append(button(t('my'),()=>show(()=>staffBookings(panel,id))),button(t('schedule'),()=>show(()=>staffSchedule(panel,id))),button(t('duration'),()=>show(()=>staffServices(panel,id))),button(t('clients'),()=>show(()=>staffClients(panel,id))),button(t('linksQr'),()=>show(()=>renderLinks(panel,id))),button(t('manual'),()=>{state.view='services';state.manual=true;state.editing=null;state.step=1;state.staffId=id;return render();}));
- await show(()=>staffBookings(panel,id));
+ nav.append(button(t('calendar'),()=>show(()=>renderCalendar(panel,id))),button(t('schedule'),()=>show(()=>staffSchedule(panel,id))),button(t('duration'),()=>show(()=>staffServices(panel,id))),button(t('clients'),()=>show(()=>staffClients(panel,id))),button(t('linksQr'),()=>show(()=>renderLinks(panel,id))),button(t('manual'),()=>{state.view='services';state.manual=true;state.editing=null;state.step=1;state.staffId=id;return render();}));
+ await show(()=>renderCalendar(panel,id));
 }
-async function staffBookings(panel,id){
- const scope=state.me.owner?'all':'staff';const list=el('div');await renderBookings(scope,list,id);
- panel.append(list);
+async function renderCalendar(panel,barberId=null){
+ panel.append(el('h2',t('calendar')),el('p',t('calendarHint'),'muted'));
+ const filters=el('form',null,'card'),dates=el('div',null,'two');filters.append(dates);
+ const from=input(dates,t('dateFrom'),'from',today(),'date'),to=input(dates,t('dateTo'),'to',new Date(Date.parse(today()+'T12:00:00Z')+6*86400000).toISOString().slice(0,10),'date');from.required=to.required=true;
+ let master=null;
+ if(state.me.owner&&!barberId){const barbers=await api('/owner/barbers');master=select(filters,t('selectBarber'),'barber_id',[['',t('allBarbers')],...barbers.map(b=>[b.id,b.name+(b.archived?' · '+t('archived'):'')])]);}
+ const status=select(filters,t('visitStatus'),'status',[['',t('allStatuses')],...['pending','confirmed','completed','no_show','cancelled'].map(s=>[s,t(s)])]);
+ const submit=el('button',t('showCalendar'),'primary');submit.type='submit';filters.append(submit);
+ const count=el('p',null,'muted'),list=el('div'),more=button(t('loadMore'),()=>load(false));more.hidden=true;panel.append(filters,count,list,more);
+ let cursor=null,query=null,shown=0,lastDay=null,generation=0;
+ async function load(reset=true){
+  const ticket=reset?++generation:generation;
+  if(reset){query=new URLSearchParams({from:from.value,to:to.value});const selected=barberId||master?.value;if(selected)query.set('barber_id',selected);if(status.value)query.set('status',status.value);cursor=null;shown=0;lastDay=null;list.replaceChildren();count.textContent=t('loading');}
+  const params=new URLSearchParams(query);if(cursor)params.set('cursor',cursor);submit.disabled=true;more.disabled=true;more.hidden=true;
+  try{
+   const result=await api('/calendar?'+params);if(ticket!==generation||!panel.isConnected)return;
+   for(const booking of result.items){const day=new Date((booking.starts_at+14400)*1000).toISOString().slice(0,10);if(day!==lastDay){list.append(el('h3',dateText(booking.starts_at),'calendar-day'));lastDay=day;}list.append(bookingCard(booking,state.me.owner?'all':'staff',()=>load(true)));}
+   shown+=result.items.length;cursor=result.next_cursor;count.textContent=`${t('shownVisits')}: ${shown}`;if(!shown)list.append(el('p',t('empty'),'muted'));more.hidden=!cursor;
+  }catch(error){if(ticket===generation){count.textContent=error.message;more.hidden=!cursor;}throw error;}
+  finally{if(ticket===generation){submit.disabled=false;more.disabled=false;}}
+ }
+ filters.addEventListener('submit',async event=>{event.preventDefault();if(!filters.reportValidity())return;try{await load();}catch(error){toast(error.message);}});
+ await load();
+}
+async function ownerClients(panel){
+ panel.append(el('h2',t('clients')),el('p',t('blockHint'),'notice'),button(t('refresh'),()=>{panel.replaceChildren();return ownerClients(panel);}));
+ const list=el('div'),more=button(t('loadMore'),()=>load());more.hidden=true;panel.append(list,more);let cursor=null,first=true;
+ async function load(){
+  const page=await api('/owner/clients'+(cursor?'?cursor='+encodeURIComponent(cursor):''));if(!panel.isConnected)return;
+  if(first&&!page.items.length)list.append(el('p',t('noClients'),'muted'));first=false;
+  for(const client of page.items){
+   const card=el('article',null,'card');list.append(card);
+   function draw(){
+    card.replaceChildren(el('h3',client.name),el('p',`${t('completed')}: ${client.completed_count} · ${t('no_show')}: ${client.no_show_count}`,'muted'));
+    if(!client.has_telegram){card.append(el('p',t('manualClient'),'muted'));return;}
+    const action=button(client.blocked?t('unblockClient'):t('blockClient'),()=>{
+     const confirmation=el('div',null,'notice');confirmation.append(el('p',client.blocked?t('unblockConfirm'):t('blockConfirm')));
+     confirmation.append(button(t('confirmAction'),async()=>{const blocked=!Boolean(client.blocked);await api('/owner/clients/'+encodeURIComponent(client.id)+'/access','PATCH',{blocked,expected_blocked:Boolean(client.blocked)});client.blocked=Number(blocked);draw();toast(t('saved'));}),button(t('back'),()=>{confirmation.remove();action.hidden=false;}));action.hidden=true;card.append(confirmation);
+    });card.append(el('span',client.blocked?t('blocked'):t('accessAllowed'),'status'),el('div',null,'actions'));card.lastChild.append(action);
+   }draw();
+  }
+  cursor=page.next_cursor;more.hidden=!cursor;
+ }
+ await load();
 }
 const minute=time=>time?Number(time.slice(0,2))*60+Number(time.slice(3)):null;
 const clock=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
