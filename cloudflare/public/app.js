@@ -33,7 +33,7 @@ function chrome(){
  if(state.config.logo_url){const image=el('img');image.src=state.config.logo_url;image.alt=state.config.name;image.style.cssText='max-width:52px;max-height:52px';$('logo').replaceChildren(image);}
  const nav=$('nav');nav.replaceChildren();
  for(const view of ['services','my',...(state.me?.barberId?['staff']:[]),...(state.me?.owner?['owner']:[])]){
-  const b=button(t(view),()=>{state.view=view;state.editing=null;state.manual=false;return render();});b.className=state.view===view?'active':'';nav.append(b);
+  const b=button(t(view),()=>{if(view==='services')return newFlow();state.view=view;state.editing=null;state.manual=false;return render();});b.className=state.view===view?'active':'';nav.append(b);
  }
 }
 async function refreshCatalog(){state.catalog=await api('/catalog');}
@@ -44,7 +44,7 @@ function renderBooking(){
   const top=el('div',null,'section-head'),labels=el('div');labels.append(el('h2',t('choose')),el('p',t('chooseCopy'),'muted'));top.append(labels,el('span',String(state.catalog.services.length).padStart(2,'0'),'count'));root.append(top);
   state.catalog.services.forEach((service,i)=>{
    const b=button('',()=>{state.service=service;const preferred=state.preferredBarber&&state.catalog.links.some(l=>l.barber_id===state.preferredBarber&&l.service_id===service.id);state.barber=state.manual?state.staffId:preferred?state.preferredBarber:null;state.step=state.manual||preferred?3:2;state.time=null;state.key=null;return render();},'service');
-   b.append(el('span',String(i+1).padStart(2,'0'),'service-icon'));const info=el('div');info.append(el('strong',title(service)));const meta=el('div',null,'meta');meta.append(el('span',price(service)),el('span',`${service.duration} ${t('min')}`));info.append(meta);b.append(info,el('span','↗','arrow'));root.append(b);
+   b.append(el('span',String(i+1).padStart(2,'0'),'service-icon'));const info=el('div');info.append(el('strong',title(service)));const meta=el('div',null,'meta');meta.append(el('span',price(service)),el('span',`${service.duration} ${t('min')}`));info.append(meta);if(service['description_'+language])info.append(el('p',service['description_'+language],'muted'));b.append(info,el('span','↗','arrow'));root.append(b);
   });root.append(el('p',t('durationNote'),'muted'));return;
  }
  if(state.step===2){
@@ -59,7 +59,8 @@ function renderBooking(){
   }root.append(grid);return;
  }
  if(state.step===3){
-  root.append(button('‹ '+t('back'),()=>{state.step=2;return render();},'plain'));const selected=state.catalog.barbers.find(b=>b.id===state.barber);heading(state.editing?t('move'):t('date'),[title(state.service),selected?.name].filter(Boolean).join(' · '));
+  root.append(button('‹ '+t('back'),()=>{state.step=2;return render();},'plain'));const selected=[...state.catalog.barbers,...(state.transferBarbers||[])].find(b=>b.id===state.barber);heading(state.editing?t('move'):t('date'),[title(state.service),selected?.name].filter(Boolean).join(' · '));
+  if(state.editing&&state.me?.owner){const choices=(state.transferBarbers||state.catalog.barbers).filter(b=>b.id===state.editing.barber_id||b.active&&!b.archived&&state.catalog.links.some(l=>l.barber_id===b.id&&l.service_id===state.service.id));const master=select(root,t('transferBarber'),'transfer_barber',choices.map(b=>[b.id,b.name]),state.barber);master.addEventListener('change',()=>{state.barber=master.value;state.time=null;void render();});root.append(el('p',t('transferHint'),'muted'));}
   const date=input(root,t('date'),'day',state.date||today(),'date');date.min=today();date.max=new Date(Date.parse(today()+'T12:00:00Z')+(state.config.advance_days||30)*86400000).toISOString().slice(0,10);
   const slots=el('div',null,'slots'),caption=el('p',t('time'),'muted');root.append(caption,slots);
   const next=button(t('continue')+' ↗',()=>{state.step=4;return render();},'primary');next.disabled=true;root.append(next);
@@ -76,12 +77,12 @@ function renderBooking(){
  }
  if(state.step===4){
   root.append(button('‹ '+t('back'),()=>{state.step=3;return render();},'plain'));heading(t('confirm'));
-  const card=el('div',null,'card'),master=state.catalog.barbers.find(b=>b.id===state.barber);card.append(el('h3',title(state.service)),el('p',master?.name||t('any')),el('p',`${dateText(state.time)} · ${timeText(state.time)}`),el('h3',price(state.service)));root.append(card);
+  const card=el('div',null,'card'),master=[...state.catalog.barbers,...(state.transferBarbers||[])].find(b=>b.id===state.barber);card.append(el('h3',title(state.service)),el('p',master?.name||t('any')),el('p',`${dateText(state.time)} · ${timeText(state.time)}`),el('h3',price(state.service)));root.append(card);
   if(state.service.price_min!==state.service.price_max)root.append(el('p',t('rangeNote'),'notice'));
   root.append(el('p',t('privacy'),'muted'));
   root.append(button(t('confirm')+' ↗',async()=>{
    state.key??=crypto.randomUUID();
-   if(state.editing)await api('/bookings/'+state.editing.id,'PATCH',{version:state.editing.version,starts_at:state.time});
+   if(state.editing)await api('/bookings/'+state.editing.id,'PATCH',{version:state.editing.version,starts_at:state.time,...(state.barber!==state.editing.barber_id?{barber_id:state.barber}:{})});
    else await api(state.manual?'/manual-bookings':'/bookings','POST',{service_id:state.service.id,barber_id:state.barber,starts_at:state.time},state.key);
    state.step=5;await render();
   },'primary'));return;
@@ -98,7 +99,7 @@ function bookingCard(booking,scope,refresh=render){
   const actions=el('div',null,'actions');
   if(['confirmed','pending'].includes(booking.status)){
    actions.append(button(t('cancel'),async()=>{if(!window.confirm(t('deleteConfirm')))return;await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status:'cancelled'});await refresh();}));
-   actions.append(button(t('move'),()=>{state.editing=booking;state.manual=false;state.service={...booking,id:booking.service_id,duration:(booking.ends_at-booking.starts_at)/60};state.barber=booking.barber_id;state.view='services';state.step=3;return render();}));
+   actions.append(button(t('move'),async()=>{state.transferBarbers=state.me?.owner?await api('/owner/barbers'):null;state.editing=booking;state.manual=false;state.service={...booking,id:booking.service_id,duration:(booking.ends_at-booking.starts_at)/60};state.barber=booking.barber_id;state.date=new Date((booking.starts_at+14400)*1000).toISOString().slice(0,10);state.time=null;state.view='services';state.step=3;return render();}));
    if(scope!=='mine')for(const status of [...(booking.status==='pending'?['confirmed']:[]),'completed','no_show'])actions.append(button(t(status),async()=>{await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status});await refresh();}));
   }
   if(scope==='mine')actions.append(button(t('repeat'),()=>{state.service=state.catalog.services.find(s=>s.id===booking.service_id);if(!state.service)return newFlow();state.view='services';state.step=2;state.editing=null;state.manual=false;return render();}));
@@ -118,28 +119,40 @@ async function ownerBarbers(panel){
  const barbers=await api('/owner/barbers');
  const add=el('form',null,'card');input(add,t('name'),'name').required=true;formSave(add,async f=>{await api('/owner/barbers','POST',{name:f.get('name')});panel.replaceChildren();await ownerBarbers(panel);});panel.append(el('h2',t('addBarber')),add);
  for(const barber of barbers){
-  const card=el('article',null,'card');card.append(el('h3',barber.name),el('p',`${barber.archived?t('archived'):barber.active?t('active'):t('unavailable')} · ${t('future')}: ${barber.future_count}`,'muted'));
+  const card=el('article',null,'card');card.append(el('h3',barber.name),el('p',`${barber.archived?t('archived'):barber.active?t('active'):t('unavailable')} · ${t('scheduledVisits')}: ${barber.future_count}`,'muted'));
   const actions=el('div',null,'actions');actions.append(button(t('edit'),()=>{panel.replaceChildren();return editBarber(panel,barber);}));
   actions.append(button(t('staff'),async()=>{state.staffId=barber.id;root.replaceChildren();await renderStaff(barber.id);}));
   actions.append(button(barber.archived?t('restore'):t('archive'),async()=>{
-   const data={version:barber.version,archived:!barber.archived};if(!barber.archived&&barber.future_count){if(!window.confirm(`${t('future')}: ${barber.future_count}. ${t('keep')}?`))return;data.future_action='keep';}
+   if(!barber.archived)return retireBarber(panel,barber,'archive');const data={version:barber.version,archived:false};
    await api('/owner/barbers/'+barber.id,'PATCH',data);await refreshCatalog();panel.replaceChildren();await ownerBarbers(panel);
   }));card.append(actions);panel.append(card);
  }
 }
 async function editBarber(panel,barber){
  const f=el('form',null,'card');input(f,t('name'),'name',barber.name).required=true;input(f,t('description'),'description',barber.description,'textarea');input(f,t('photo'),'photo_url',barber.photo_url,'url');input(f,t('active'),'active',barber.active,'checkbox');input(f,t('online'),'online',barber.online_enabled,'checkbox');
- formSave(f,async d=>{if(barber.future_count&&!d.has('active')&&!window.confirm(`${t('future')}: ${barber.future_count}. ${t('keep')}?`))return;await api('/owner/barbers/'+barber.id,'PATCH',{version:barber.version,name:d.get('name'),description:d.get('description'),photo_url:d.get('photo_url')||null,active:d.has('active'),online_enabled:d.has('online'),...(barber.future_count&&!d.has('active')?{future_action:'keep'}:{})});await refreshCatalog();panel.replaceChildren();await ownerBarbers(panel);});panel.append(f);
+ formSave(f,async d=>{const body={version:barber.version,name:d.get('name'),description:d.get('description'),photo_url:d.get('photo_url')||null,active:d.has('active'),online_enabled:d.has('online')};if(!d.has('active')&&barber.active)return retireBarber(panel,barber,'disable',body);await api('/owner/barbers/'+barber.id,'PATCH',body);await refreshCatalog();panel.replaceChildren();await ownerBarbers(panel);});panel.append(f);
  panel.append(button(t('invite'),async()=>{const result=await api('/owner/barbers/'+barber.id+'/invitation','POST',{});const link=el('a',result.url,'link');link.href=result.url;panel.append(link);}));
  panel.append(button(t('revoke'),async()=>{await api('/owner/barbers/'+barber.id,'PATCH',{version:barber.version,revoke_access:true});panel.replaceChildren();await ownerBarbers(panel);}));
+}
+async function retireBarber(panel,barber,mode='archive',changes=null){
+ const first=await api('/owner/barbers/'+barber.id+'/future-bookings'),snapshot=first.barber;
+ if(changes&&changes.version!==snapshot.version)throw new Error(words[language].errors.STATE_CONFLICT);
+ panel.replaceChildren(el('h2',`${t(mode==='archive'?'archive':'disableBarber')} · ${snapshot.name}`),el('p',`${t('scheduledVisits')}: ${snapshot.future_count}`,'notice'),el('p',t('retireHint'),'muted'));
+ const actions=el('div',null,'actions'),confirmation=el('div'),list=el('div');panel.append(actions,confirmation,list);
+ async function apply(action){await api('/owner/barbers/'+barber.id,'PATCH',{...(changes||{}),version:snapshot.version,...(mode==='archive'?{archived:true}:{active:false}),future_action:action,expected_future_count:snapshot.future_count,expected_bookings_revision:snapshot.bookings_revision});await refreshCatalog();panel.replaceChildren();await ownerBarbers(panel);}
+ actions.append(button(t('keepVisits'),()=>apply('keep')),button(t('cancelAllVisits'),()=>{confirmation.replaceChildren(el('p',`${t('cancelAllConfirm')} (${snapshot.future_count})`,'notice'),button(t('confirmCancelAll'),()=>apply('cancel')),button(t('back'),()=>confirmation.replaceChildren()));}),button(t('refresh'),()=>retireBarber(panel,snapshot,mode,changes)),button(t('back'),()=>{panel.replaceChildren();return ownerBarbers(panel);}));
+ let cursor=first.next_cursor;const more=button(t('loadMore'),async()=>{const page=await api('/owner/barbers/'+barber.id+'/future-bookings?cursor='+encodeURIComponent(cursor));if(page.barber.bookings_revision!==snapshot.bookings_revision)throw new Error(words[language].errors.STATE_CONFLICT);draw(page.items);cursor=page.next_cursor;more.hidden=!cursor;});panel.append(more);more.hidden=!cursor;
+ function draw(items){for(const booking of items)list.append(bookingCard(booking,'all',()=>retireBarber(panel,snapshot,mode,changes)));}
+ draw(first.items);if(!first.items.length)list.append(el('p',t('empty'),'muted'));
 }
 async function ownerServices(panel){
  const services=await api('/owner/services');
  function edit(service={}){
   panel.replaceChildren();panel.append(el('h2',service.id?title(service):t('addService')));const f=el('form',null,'card');
   for(const [label,key,type,value]of [['titleHy','title_hy','text',''],['titleRu','title_ru','text',''],['priceMin','price_min','number',0],['priceMax','price_max','number',0],['duration','duration','number',30]]){const field=input(f,t(label),key,service[key]??value,type);field.required=true;if(type==='number'){field.min='0';field.max=key==='duration'?'480':'20000000';field.step=key==='duration'?'5':'1';}}
+  input(f,t('descriptionHy'),'description_hy',service.description_hy||'','textarea').maxLength=500;input(f,t('descriptionRu'),'description_ru',service.description_ru||'','textarea').maxLength=500;input(f,t('sortOrder'),'sort_order',service.sort_order??0,'number').step='1';
   input(f,t('active'),'active',service.active??true,'checkbox');
-  formSave(f,async d=>{const body={title_hy:d.get('title_hy'),title_ru:d.get('title_ru'),price_min:Number(d.get('price_min')),price_max:Number(d.get('price_max')),duration:Number(d.get('duration')),active:d.has('active')};await api('/owner/services'+(service.id?'/'+service.id:''),service.id?'PUT':'POST',body);await refreshCatalog();panel.replaceChildren();await ownerServices(panel);});panel.append(f);
+  formSave(f,async d=>{const body={title_hy:d.get('title_hy'),title_ru:d.get('title_ru'),description_hy:d.get('description_hy'),description_ru:d.get('description_ru'),sort_order:Number(d.get('sort_order')),price_min:Number(d.get('price_min')),price_max:Number(d.get('price_max')),duration:Number(d.get('duration')),active:d.has('active')};await api('/owner/services'+(service.id?'/'+service.id:''),service.id?'PUT':'POST',body);await refreshCatalog();panel.replaceChildren();await ownerServices(panel);});panel.append(f);
  }
  panel.append(button(t('addService'),()=>edit(), 'primary'));
  for(const service of services){const card=el('div',null,'card');card.append(el('h3',title(service)),el('p',`${price(service)} · ${service.duration} ${t('min')}`),button(t('edit'),()=>edit(service)));panel.append(card);}
@@ -263,6 +276,6 @@ function renderLinks(panel,barberId=null){
   const download=el('a',t('downloadQr'),'secondary link');download.href=canvas.toDataURL('image/png');download.download=`37-${id||'barbershop'}-qr.png`;actions.append(download);box.append(actions);
  }choice?.addEventListener('change',draw);draw();
 }
-$('language').addEventListener('click',async()=>{language=language==='hy'?'ru':'hy';localStorage.setItem('37-language',language);if(state.me)await api('/me/language','PUT',{language}).catch(()=>{});await render();});
-async function start(){chrome();root.append(el('div',t('loading'),'loading'));try{state.config=await api('/config');await refreshCatalog();if(tg?.initData){try{state.me=await api('/me');}catch(e){toast(e.message);}}state.preferredBarber=linkedBarber(location.search,tg?.initDataUnsafe?.start_param,state.catalog.barbers.map(b=>b.id));await render();}catch(error){root.replaceChildren(el('p',error.message,'notice'));}}
+$('language').addEventListener('click',async()=>{const control=$('language');control.disabled=true;try{const next=language==='hy'?'ru':'hy';if(state.me)await api('/me/language','PUT',{language:next});language=next;localStorage.setItem('37-language',language);await render();}catch(error){toast(error.message);}finally{control.disabled=false;}});
+async function start(){chrome();root.append(el('div',t('loading'),'loading'));try{state.config=await api('/config');await refreshCatalog();if(tg?.initData){try{state.me=await api('/me');language=state.me.language==='ru'?'ru':'hy';localStorage.setItem('37-language',language);}catch(e){toast(e.message);}}state.preferredBarber=linkedBarber(location.search,tg?.initDataUnsafe?.start_param,state.catalog.barbers.map(b=>b.id));await render();}catch(error){root.replaceChildren(el('p',error.message,'notice'));}}
 void start();
