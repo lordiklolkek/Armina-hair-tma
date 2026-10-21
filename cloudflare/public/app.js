@@ -161,7 +161,20 @@ async function ownerSettings(panel){
  const config=await api('/config'),f=el('form',null,'card');
  input(f,t('name'),'name',config.name);input(f,t('address'),'address',config.address);input(f,t('logo'),'logo_url',config.logo_url,'url');input(f,t('advance'),'advance_days',config.advance_days,'number');input(f,t('notice'),'notice_minutes',config.notice_minutes,'number');
  formSave(f,async d=>{await api('/owner/settings','PUT',{name:d.get('name'),address:d.get('address'),logo_url:d.get('logo_url')||null,advance_days:Number(d.get('advance_days')),notice_minutes:Number(d.get('notice_minutes'))});state.config=await api('/config');chrome();});panel.append(f);
- const diagnostics=await api('/owner/diagnostics');const note=el('div',null,'notice');for(const row of diagnostics)note.append(el('p',`${t(row.state)}: ${row.count}`));if(diagnostics.length)panel.append(note);
+ const notifications=el('section');panel.append(notifications);await ownerNotifications(notifications);
+}
+async function ownerNotifications(panel){
+ panel.replaceChildren(el('h2',t('notifications')),el('p',t('notificationsHint'),'muted'));
+ const summary=el('p',null,'notice'),actions=el('div',null,'actions'),confirm=el('div');panel.append(summary,actions,confirm);
+ actions.append(button(t('refresh'),()=>ownerNotifications(panel)),button(t('checkNotifications'),()=>{confirm.replaceChildren(el('p',t('selfTestHint'),'notice'),button(t('sendSelfTest'),async()=>{const job=await api('/owner/notifications/self-test','POST',{});confirm.replaceChildren(el('p',`${t('selfTestQueued')} · ${t(job.state)}`,'notice'));await load(true);}),button(t('back'),()=>confirm.replaceChildren()));}));
+ const filter=select(panel,t('deliveryState'),'notification_state',['failed','pending','sending','sent'].map(s=>[s,t(s)]),'failed'),list=el('div'),more=button(t('loadMore'),()=>load(false));panel.append(list,more);more.hidden=true;let cursor=null,generation=0;
+ async function load(reset=true){const ticket=reset?++generation:generation;if(reset){cursor=null;list.replaceChildren();}const query=new URLSearchParams({state:filter.value});if(cursor)query.set('cursor',cursor);more.hidden=true;const page=await api('/owner/notifications?'+query);if(ticket!==generation||!panel.isConnected)return;
+  const counts=Object.fromEntries(page.summary.map(s=>[s.state,s.count]));summary.textContent=['pending','sending','sent','failed'].map(s=>`${t(s)}: ${counts[s]||0}`).join(' · ');
+  for(const job of page.items){const card=el('article',null,'card');card.append(el('h3',title(job)||t('systemMessage')),el('p',`${t(job.state)} · ${t('deliveryAttempts')}: ${job.attempts}`,'muted'));if(job.audience)card.append(el('p',t(job.audience==='barber'?'toBarber':'toClient'),'muted'));if(job.last_error)card.append(el('p',words[language].deliveryErrors[job.last_error]||t('deliveryUnknown'),'notice'));
+   if(job.can_retry){const retry=button(t('retryDelivery'),()=>{retry.hidden=true;const confirmation=el('div',null,'notice');confirmation.append(el('p',t('retryHint')),button(t('confirmAction'),async()=>{await api('/owner/notifications/'+encodeURIComponent(job.id)+'/retry','POST',{});await load();toast(t('retryQueued'));}),button(t('back'),()=>{confirmation.remove();retry.hidden=false;}));card.append(confirmation);});card.append(retry);}list.append(card);
+  }cursor=page.next_cursor;more.hidden=!cursor;if(reset&&!page.items.length)list.append(el('p',t('noNotifications'),'muted'));
+ }
+ filter.addEventListener('change',()=>{void load().catch(error=>toast(error.message));});await load();
 }
 async function renderStaff(id){
  state.staffId=id;heading(t('staff'));const nav=el('div',null,'actions'),panel=el('div');root.append(nav,panel);
