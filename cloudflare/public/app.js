@@ -1,8 +1,9 @@
 import {words} from './i18n.js';
+import {bookingLink,linkedBarber,qrPixels} from './links.js';
 const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();
 const $=id=>document.getElementById(id),root=$('content');
 let language=localStorage.getItem('37-language')==='ru'?'ru':'hy';
-const state={view:'services',step:1,config:{},catalog:{services:[],barbers:[],links:[],absences:[]},me:null,service:null,barber:null,date:null,time:null,key:null,editing:null,manual:false,staffId:null,request:0};
+const state={view:'services',step:1,config:{},catalog:{services:[],barbers:[],links:[],absences:[]},me:null,service:null,barber:null,preferredBarber:null,date:null,time:null,key:null,editing:null,manual:false,staffId:null,request:0};
 const t=k=>words[language][k]||k;
 const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!==undefined&&text!==null)node.textContent=text;if(cls)node.className=cls;return node;};
 const title=s=>s[`title_${language}`];
@@ -42,7 +43,7 @@ function renderBooking(){
  if(state.step===1){
   const top=el('div',null,'section-head'),labels=el('div');labels.append(el('h2',t('choose')),el('p',t('chooseCopy'),'muted'));top.append(labels,el('span',String(state.catalog.services.length).padStart(2,'0'),'count'));root.append(top);
   state.catalog.services.forEach((service,i)=>{
-   const b=button('',()=>{state.service=service;state.step=state.manual?3:2;if(state.manual)state.barber=state.staffId;state.key=null;return render();},'service');
+   const b=button('',()=>{state.service=service;const preferred=state.preferredBarber&&state.catalog.links.some(l=>l.barber_id===state.preferredBarber&&l.service_id===service.id);state.barber=state.manual?state.staffId:preferred?state.preferredBarber:null;state.step=state.manual||preferred?3:2;state.time=null;state.key=null;return render();},'service');
    b.append(el('span',String(i+1).padStart(2,'0'),'service-icon'));const info=el('div');info.append(el('strong',title(service)));const meta=el('div',null,'meta');meta.append(el('span',price(service)),el('span',`${service.duration} ${t('min')}`));info.append(meta);b.append(info,el('span','↗','arrow'));root.append(b);
   });root.append(el('p',t('durationNote'),'muted'));return;
  }
@@ -58,7 +59,7 @@ function renderBooking(){
   }root.append(grid);return;
  }
  if(state.step===3){
-  root.append(button('‹ '+t('back'),()=>{state.step=2;return render();},'plain'));heading(state.editing?t('move'):t('date'),title(state.service));
+  root.append(button('‹ '+t('back'),()=>{state.step=2;return render();},'plain'));const selected=state.catalog.barbers.find(b=>b.id===state.barber);heading(state.editing?t('move'):t('date'),[title(state.service),selected?.name].filter(Boolean).join(' · '));
   const date=input(root,t('date'),'day',state.date||today(),'date');date.min=today();date.max=new Date(Date.parse(today()+'T12:00:00Z')+(state.config.advance_days||30)*86400000).toISOString().slice(0,10);
   const slots=el('div',null,'slots'),caption=el('p',t('time'),'muted');root.append(caption,slots);
   const next=button(t('continue')+' ↗',()=>{state.step=4;return render();},'primary');next.disabled=true;root.append(next);
@@ -109,7 +110,7 @@ async function renderBookings(scope,target=root,barberId=null){
 async function renderOwner(){
  heading(t('owner'));const subnav=el('div',null,'actions');root.append(subnav);const panel=el('div');root.append(panel);
  async function show(action){panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}}
- subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('allBookings'),()=>show(()=>renderBookings('all',panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))));
+ subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('allBookings'),()=>show(()=>renderBookings('all',panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))));
  await show(()=>ownerBarbers(panel));
 }
 async function ownerBarbers(panel){
@@ -151,7 +152,7 @@ async function ownerSettings(panel){
 async function renderStaff(id){
  state.staffId=id;heading(t('staff'));const nav=el('div',null,'actions'),panel=el('div');root.append(nav,panel);
  const show=async action=>{panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}};
- nav.append(button(t('my'),()=>show(()=>staffBookings(panel,id))),button(t('schedule'),()=>show(()=>staffSchedule(panel,id))),button(t('duration'),()=>show(()=>staffServices(panel,id))),button(t('clients'),()=>show(()=>staffClients(panel,id))),button(t('manual'),()=>{state.view='services';state.manual=true;state.editing=null;state.step=1;state.staffId=id;return render();}));
+ nav.append(button(t('my'),()=>show(()=>staffBookings(panel,id))),button(t('schedule'),()=>show(()=>staffSchedule(panel,id))),button(t('duration'),()=>show(()=>staffServices(panel,id))),button(t('clients'),()=>show(()=>staffClients(panel,id))),button(t('linksQr'),()=>show(()=>renderLinks(panel,id))),button(t('manual'),()=>{state.view='services';state.manual=true;state.editing=null;state.step=1;state.staffId=id;return render();}));
  await show(()=>staffBookings(panel,id));
 }
 async function staffBookings(panel,id){
@@ -160,17 +161,44 @@ async function staffBookings(panel,id){
 }
 const minute=time=>time?Number(time.slice(0,2))*60+Number(time.slice(3)):null;
 const clock=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+const endClock=m=>m===1440?'00:00':clock(m);
 async function staffSchedule(panel,id){
- const data=await api('/staff/'+id+'/schedule'),f=el('form',null,'card');panel.append(el('p',t('hoursHint'),'muted'));
+ const data=await api('/staff/'+id+'/schedule'),f=el('form'),weekly=el('details',null,'card');weekly.append(el('summary',t('weeklySchedule')),el('p',t('hoursHint'),'muted'));panel.append(weekly);
  const rows=[];
  for(let day=0;day<7;day++)for(let interval=0;interval<2;interval++){
   const h=data.hours.filter(h=>h.weekday===day)[interval],row=el('div',null,'hours-row');row.append(el('span',interval?'↳':t('weekdays')[day]));
-  const start=el('input'),end=el('input');start.type=end.type='time';start.step=end.step='300';start.value=h?clock(h.start_minute):'';end.value=h?clock(h.end_minute):'';start.setAttribute('aria-label',`${t('weekdays')[day]} ${t('start')} ${interval+1}`);end.setAttribute('aria-label',`${t('weekdays')[day]} ${t('end')} ${interval+1}`);row.append(start,end);rows.push({day,start,end});f.append(row);
+  const start=el('input'),end=el('input');start.type=end.type='time';start.step=end.step='300';start.value=h?clock(h.start_minute):'';end.value=h?endClock(h.end_minute):'';start.setAttribute('aria-label',`${t('weekdays')[day]} ${t('start')} ${interval+1}`);end.setAttribute('aria-label',`${t('weekdays')[day]} ${t('end')} ${interval+1}`);row.append(start,end);rows.push({day,start,end});f.append(row);
  }
- formSave(f,async()=>{const hours=[];for(const {day,start,end}of rows){if(!start.value&&!end.value)continue;if(!start.value||!end.value)throw Error(t('errors').INVALID_INPUT);hours.push({weekday:day,start_minute:minute(start.value),end_minute:minute(end.value)});}await api('/staff/'+id+'/schedule','PUT',{hours});});panel.append(f);
+ formSave(f,async()=>{const hours=[];for(const {day,start,end}of rows){if(!start.value&&!end.value)continue;if(!start.value||!end.value)throw Error(t('errors').INVALID_INPUT);hours.push({weekday:day,start_minute:minute(start.value),end_minute:minute(end.value)||1440});}await api('/staff/'+id+'/schedule','PUT',{hours});});weekly.append(f);
+ renderDateSchedule(panel,id,data);
  const away=el('form',null,'card');select(away,t('absence'),'kind',[['vacation',t('vacation')],['unavailable',t('unavailable')],['break',t('break')]]);input(away,t('start'),'start','','datetime-local').required=true;input(away,t('end'),'end','','datetime-local').required=true;
  formSave(away,async d=>{await api('/staff/'+id+'/absences','POST',{starts_at:Date.parse(d.get('start')+':00+04:00')/1000,ends_at:Date.parse(d.get('end')+':00+04:00')/1000,kind:d.get('kind')});panel.replaceChildren();await staffSchedule(panel,id);});panel.append(away);
  for(const a of data.absences){const card=el('div',null,'card');card.append(el('p',`${t(a.kind)} · ${dateText(a.starts_at)} ${timeText(a.starts_at)} → ${dateText(a.ends_at)} ${timeText(a.ends_at)}`),button(t('remove'),async()=>{await api(`/staff/${id}/absences/${a.id}`,'DELETE');panel.replaceChildren();await staffSchedule(panel,id);}));panel.append(card);}
+}
+function renderDateSchedule(panel,id,data){
+ const section=el('section');section.append(el('h3',t('dateSchedule')),el('p',t('dateScheduleHint'),'muted'));const f=el('form',null,'card');
+ const day=input(f,t('date'),'override_day',today(),'date');day.required=true;day.min=today();day.max=new Date(Date.parse(today()+'T12:00:00Z')+365*86400000).toISOString().slice(0,10);
+ const intervals=el('div');f.append(intervals);const rows=[];
+ function add(h={}){
+  if(rows.length>=8)return;const row=el('div',null,'hours-row');row.append(el('span',String(rows.length+1)));
+  const start=el('input'),end=el('input');start.type=end.type='time';start.step=end.step='300';start.value=h.start_minute!=null?clock(h.start_minute):'';end.value=h.end_minute!=null?clock(h.end_minute):'';
+  if(h.end_minute===1440)end.value='00:00';start.setAttribute('aria-label',`${t('dateSchedule')} ${t('start')} ${rows.length+1}`);end.setAttribute('aria-label',`${t('dateSchedule')} ${t('end')} ${rows.length+1}`);row.append(start,end);rows.push({start,end});intervals.append(row);
+ }
+ function load(){
+  rows.length=0;intervals.replaceChildren();const override=data.overrides.find(o=>o.day===day.value);
+  const weekday=(new Date(day.value+'T12:00:00Z').getUTCDay()+6)%7;
+  const hours=override?override.hours:data.hours.filter(h=>h.weekday===weekday);hours.forEach(add);while(rows.length<2)add();
+ }
+ day.addEventListener('change',load);load();
+ const actions=el('div',null,'actions');actions.append(button(t('addInterval'),()=>add()),button(t('dayOff'),()=>{for(const row of rows)row.start.value=row.end.value='';}));f.append(actions);
+ formSave(f,async()=>{
+  const hours=[];for(const {start,end}of rows){if(!start.value&&!end.value)continue;if(!start.value||!end.value)throw Error(t('errors').INVALID_INPUT);hours.push({start_minute:minute(start.value),end_minute:minute(end.value)||1440});}
+  const old=data.overrides.find(o=>o.day===day.value);await api(`/staff/${id}/schedule/dates/${day.value}`,'PUT',{hours,version:old?.version??null});panel.replaceChildren();await staffSchedule(panel,id);
+ });section.append(f);
+ for(const override of data.overrides){
+  const card=el('div',null,'card');card.append(el('strong',override.day),el('p',override.hours.length?override.hours.map(h=>`${clock(h.start_minute)}–${clock(h.end_minute)}`).join(' · '):t('dayOff')));
+  const actions=el('div',null,'actions');actions.append(button(t('edit'),()=>{day.value=override.day;load();day.focus();}),button(t('weeklyAgain'),async()=>{if(!window.confirm(t('weeklyAgainConfirm')))return;await api(`/staff/${id}/schedule/dates/${override.day}`,'DELETE',{version:override.version});panel.replaceChildren();await staffSchedule(panel,id);}));card.append(actions);section.append(card);
+ }panel.append(section);
 }
 async function staffServices(panel,id){
  const assigned=await api('/staff/'+id+'/services'),services=state.me.owner?await api('/owner/services'):assigned;
@@ -180,6 +208,19 @@ async function staffClients(panel,id){
  const clients=await api('/staff/'+id+'/clients');if(!clients.length)panel.append(el('p',t('empty'),'muted'));
  for(const client of clients){const f=el('form',null,'card');f.append(el('h3',client.name));input(f,t('note'),'note',client.note||'','textarea');formSave(f,async d=>{await api(`/staff/${id}/notes/${client.id}`,'PUT',{text:d.get('note')});});panel.append(f);}
 }
+function renderLinks(panel,barberId=null){
+ panel.append(el('h3',t('linksQr')),el('p',state.config.telegram_app_url?t('telegramLinksHint'):t('browserLinksHint'),'notice'));
+ if(barberId&&!state.catalog.barbers.some(b=>b.id===barberId)){panel.append(el('p',t('errors').BARBER_UNAVAILABLE,'notice'));return;}
+ let choice;if(!barberId){choice=select(panel,t('selectBarber'),'link_barber',[['',t('wholeShop')],...state.catalog.barbers.map(b=>[b.id,b.name])]);}
+ const box=el('div',null,'card');panel.append(box);
+ function draw(){
+  box.replaceChildren();const id=barberId||choice.value||null,url=bookingLink(location.origin,state.config.telegram_app_url,id);
+  const field=input(box,t('bookingLink'),'booking_link',url);field.readOnly=true;
+  const canvas=el('canvas');const pixels=qrPixels(url);canvas.width=canvas.height=pixels.size;canvas.style.cssText='display:block;width:240px;max-width:100%;height:auto;margin:20px auto;background:white';canvas.setAttribute('role','img');canvas.setAttribute('aria-label',t('linksQr'));canvas.getContext('2d').putImageData(new ImageData(pixels.data,pixels.size,pixels.size),0,0);box.append(canvas);
+  const actions=el('div',null,'actions');actions.append(button(t('copyLink'),async()=>{try{await navigator.clipboard.writeText(url);toast(t('copied'));}catch{field.focus();field.select();toast(t('copyManually'));}}));
+  const download=el('a',t('downloadQr'),'secondary link');download.href=canvas.toDataURL('image/png');download.download=`37-${id||'barbershop'}-qr.png`;actions.append(download);box.append(actions);
+ }choice?.addEventListener('change',draw);draw();
+}
 $('language').addEventListener('click',async()=>{language=language==='hy'?'ru':'hy';localStorage.setItem('37-language',language);if(state.me)await api('/me/language','PUT',{language}).catch(()=>{});await render();});
-async function start(){chrome();root.append(el('div',t('loading'),'loading'));try{state.config=await api('/config');await refreshCatalog();if(tg?.initData){try{state.me=await api('/me');}catch(e){toast(e.message);}}const startParam=new URLSearchParams(location.search).get('barber')||tg?.initDataUnsafe?.start_param;if(startParam){const candidate=startParam.replace(/^barber_/,'');if(state.catalog.barbers.some(b=>b.id===candidate))state.barber=candidate;}await render();}catch(error){root.replaceChildren(el('p',error.message,'notice'));}}
+async function start(){chrome();root.append(el('div',t('loading'),'loading'));try{state.config=await api('/config');await refreshCatalog();if(tg?.initData){try{state.me=await api('/me');}catch(e){toast(e.message);}}state.preferredBarber=linkedBarber(location.search,tg?.initDataUnsafe?.start_param,state.catalog.barbers.map(b=>b.id));await render();}catch(error){root.replaceChildren(el('p',error.message,'notice'));}}
 void start();
