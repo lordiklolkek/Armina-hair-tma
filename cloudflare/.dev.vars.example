@@ -1,0 +1,6 @@
+# Only a separate TEST bot. No real clients. Never commit .dev.vars.
+BOT_TOKEN=
+WEBHOOK_SECRET=
+# Numeric Telegram IDs, comma separated. Both lists must include the demo owner.
+OWNER_IDS=
+DEMO_USER_IDS=
