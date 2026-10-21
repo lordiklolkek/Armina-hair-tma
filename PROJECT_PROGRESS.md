@@ -65,6 +65,7 @@
 - Повторный deploy сохранил в исходной D1 8 услуг/3 мастера/0 визитов. Cron */5 * * * * зарегистрирован; при отсутствии BOT_TOKEN обработчик доставки завершается без отправки. Живая доставка не проверялась.
 - workers_dev=true; preview_urls=false; OWNER_IDS, DEMO_USER_IDS, BOT_USERNAME пустые. BOT_TOKEN и WEBHOOK_SECRET не задавались. Публичен только демонстрационный просмотр, закрытый Telegram-сценарий требует дальнейшей настройки.
 - Платный план не подключался; панель показывает лимит Workers 100 000 запросов/сутки. Старый Render и @ArminaHair_Bot не менялись. Скриншот размещённого приложения: outputs/37-cloudflare-mobile-hy.png в рабочем каталоге чата.
+- Настройки и документация сверены с GitHub через fetch; код/конфигурация сохранены в `400628b7ba7b4a8f8e440179ce6456997f3f0bd7`. Проверки этого коммита успешны: [Cloudflare demo checks](https://github.com/lordiklolkek/Armina-hair-tma/actions/runs/39595608671), [Python/JavaScript](https://github.com/lordiklolkek/Armina-hair-tma/actions/runs/39595608825). Локальные TypeScript check и production dry run после изменения конфигурации также прошли. Последующее изменение журнала не меняет код Worker.
 
 ## Исходный аудит и решения
 
