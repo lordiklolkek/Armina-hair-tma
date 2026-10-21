@@ -67,6 +67,43 @@ test('idempotency handles concurrent double click and rejects changed payload',a
  assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,1);
  assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first<Row>())!.n,1);
 });
+test('owner delivery diagnostics omit chat identifiers and message bodies and classify retry safely',async()=>{
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,state,last_error) VALUES('notice-network',101,'private body','failed','TELEGRAM_503'),('notice-old',101,'private body','failed','SUPERSEDED'),('notice-sent',101,'private body','sent',NULL)").run();
+ assert.equal((await request('/api/owner/notifications',101)).status,403);
+ const data=await (await request('/api/owner/notifications',1)).json() as Row;
+ assert.equal(data.items.length,2);assert.equal(data.items.find((r:Row)=>r.id==='notice-network').can_retry,true);assert.equal(data.items.find((r:Row)=>r.id==='notice-old').can_retry,false);
+ assert(!JSON.stringify(data).includes('private body'));assert(data.items.every((r:Row)=>!('chat_id' in r)&&!('text' in r)));
+ assert.equal((await request('/api/owner/notifications?state=forged',1)).status,422);
+});
+test('delivery diagnostics paginate every failed job without duplicates or unrelated states',async()=>{
+ const rows=Array.from({length:101},(_,i)=>'diagnostic-'+String(i).padStart(3,'0'));
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,state,last_error) SELECT value,101,'test','failed','TELEGRAM_503' FROM json_each(?)").bind(JSON.stringify(rows)).run();
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,state) VALUES('other-state',101,'test','sent')").run();
+ const first=await (await request('/api/owner/notifications',1)).json() as Row;assert.equal(first.items.length,100);assert(first.next_cursor);
+ const second=await (await request('/api/owner/notifications?cursor='+encodeURIComponent(first.next_cursor),1)).json() as Row;assert.equal(second.items.length,1);assert.equal(second.next_cursor,null);
+ assert.equal(new Set([...first.items,...second.items].map((r:Row)=>r.id)).size,101);assert([...first.items,...second.items].every((r:Row)=>r.state==='failed'));
+});
+test('notification self-test targets the signed owner only and repeated presses share a queue entry',async()=>{
+ assert.equal((await request('/api/owner/notifications/self-test',101,'POST',{})).status,403);
+ assert.equal((await request('/api/owner/notifications/self-test',1,'POST',{chat_id:101})).status,422);
+ assert.equal((await request('/api/owner/notifications/self-test',1,'POST',{},undefined,{BOT_TOKEN:''})).status,401);
+ await request('/api/me/language',1,'PUT',{language:'ru'});
+ const ids=[];for(let i=0;i<3;i++){const r=await request('/api/owner/notifications/self-test',1,'POST',{});assert.equal(r.status,200);ids.push((await r.json() as Row).id);}
+ assert(ids[0]===ids[1]||ids[1]===ids[2]);const expected=new Set(ids).size;
+ assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first<Row>())!.n,expected);
+ const sent:Row[]=[];const sender=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
+ await runNotifications(env,sender);assert.equal(sent.length,expected);assert(sent.every(s=>s.chat_id===1&&s.text.includes('Тест уведомлений')));await runNotifications(env,sender);assert.equal(sent.length,expected);
+ assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,0);
+});
+test('owner retry is atomic and cannot resurrect superseded or revoked staff messages',async()=>{
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,state,attempts,last_error) VALUES('notice-network',101,'test','failed',5,'TELEGRAM_503'),('notice-old',101,'test','failed',1,'SUPERSEDED'),('notice-revoked',201,'test','failed',1,'ACCESS_REVOKED')").run();
+ assert.equal((await request('/api/owner/notifications/notice-network/retry',101,'POST',{})).status,403);
+ assert.equal((await request('/api/owner/notifications/notice-old/retry',1,'POST',{})).status,409);
+ assert.equal((await request('/api/owner/notifications/notice-revoked/retry',1,'POST',{})).status,409);
+ const results=await Promise.all([request('/api/owner/notifications/notice-network/retry',1,'POST',{}),request('/api/owner/notifications/notice-network/retry',1,'POST',{})]);assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
+ const job=await db.prepare("SELECT state,attempts FROM outbox WHERE id='notice-network'").first<Row>();assert.equal(job!.state,'pending');assert.equal(job!.attempts,0);
+ assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action='notification.retry'").first<Row>())!.n,1);
+});
 test('localized notification snapshots survive catalog edits and use recipient language at delivery',async()=>{
  await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
  const b=await (await book(101)).json() as Row;
@@ -87,6 +124,16 @@ test('cancel supersedes queued creation; revoked staff receives no queued detail
  assert.equal(sent.length,1);assert.equal(sent[0].chat_id,101);assert(sent[0].text.startsWith('Գրանցումը չեղարկված է'));
  const rows=(await db.prepare('SELECT state,last_error FROM outbox WHERE booking_id=?').bind(b.id).all<Row>()).results;
  assert.equal(rows.filter(r=>r.last_error==='SUPERSEDED').length,2);assert.equal(rows.filter(r=>r.last_error==='ACCESS_REVOKED').length,1);
+});
+test('legacy text queues also suppress stale visits and revoked barber delivery',async()=>{
+ await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ const b=await (await book(101)).json() as Row;await db.prepare("UPDATE outbox SET event_json=NULL,text='legacy message' WHERE booking_id=?").bind(b.id).run();
+ assert.equal((await request('/api/bookings/'+b.id,101,'PATCH',{version:1,status:'cancelled'})).status,200);
+ await db.prepare("UPDATE outbox SET event_json=NULL,text='legacy cancelled' WHERE booking_id=? AND state='pending'").bind(b.id).run();
+ await db.prepare("UPDATE barbers SET telegram_id=NULL WHERE id='demo-a'").run();
+ const sent:Row[]=[];await runNotifications(env,async(_env,_method,payload)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};});
+ assert.equal(sent.length,1);assert.equal(sent[0].chat_id,101);assert.equal(sent[0].text,'legacy cancelled');
+ const rows=(await db.prepare('SELECT last_error FROM outbox WHERE booking_id=?').bind(b.id).all<Row>()).results;assert.equal(rows.filter(r=>r.last_error==='SUPERSEDED').length,2);assert.equal(rows.filter(r=>r.last_error==='ACCESS_REVOKED').length,1);
 });
 test('reminders render the correct language and window without repeated delivery',async()=>{
  await db.prepare('DELETE FROM working_hours').run();
