@@ -1,6 +1,10 @@
-# Only a separate TEST bot. No real clients. Never commit .dev.vars.
+# Demo credentials only. No real clients. Never commit .dev.vars.
+# Reusing the existing bot requires isolated tester access; preserve its current webhook and public menu.
 BOT_TOKEN=
 WEBHOOK_SECRET=
 # Numeric Telegram IDs, comma separated. Both lists must include the demo owner.
 OWNER_IDS=
 DEMO_USER_IDS=
+# Optional configured direct Mini App entry, e.g. https://t.me/YourBot/demo37.
+# Leave empty until verified: QR codes will explicitly offer browser preview links.
+MINI_APP_URL=
