@@ -1,12 +1,14 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "barbershop-37-demo",
+  "account_id": "f7059d303e3b449193ea684ad2a702df",
   "main": "src/index.ts",
-  "compatibility_date": "2026-10-22",
-  "workers_dev": false,
+  "compatibility_date": "2026-10-20",
+  "workers_dev": true,
+  "preview_urls": false,
   "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
-  "vars": {"APP_MODE": "demo", "OWNER_IDS": "", "DEMO_USER_IDS": "", "BOT_USERNAME": "ArminaHair_Bot"},
-  "d1_databases": [{"binding": "DB", "database_name": "barbershop-37-demo", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations"}],
+  "vars": {"APP_MODE": "demo", "OWNER_IDS": "", "DEMO_USER_IDS": "", "BOT_USERNAME": ""},
+  "d1_databases": [{"binding": "DB", "database_name": "barbershop-37-demo", "database_id": "9ace1023-9360-4658-a68d-253a5946018d", "migrations_dir": "migrations"}],
   "triggers": {"crons": ["*/5 * * * *"]},
   "observability": {"enabled": true}
 }
