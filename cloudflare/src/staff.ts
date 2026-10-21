@@ -33,11 +33,15 @@ staff.post('/owner/barbers',ownerOnly,async c=>{
 });
 staff.patch('/owner/barbers/:id',ownerOnly,async c=>{
  const d=z.object({version:z.number().int().positive(),name:text.optional(),description:z.string().max(1000).optional(),photo_url:url.optional(),
- active:z.boolean().optional(),archived:z.boolean().optional(),online_enabled:z.boolean().optional(),revoke_access:z.boolean().optional(),future_action:z.literal('keep').optional()}).strict().parse(await c.req.json());
+ active:z.boolean().optional(),archived:z.boolean().optional(),online_enabled:z.boolean().optional(),revoke_access:z.boolean().optional(),future_action:z.enum(['keep','cancel']).optional(),
+ expected_future_count:z.number().int().nonnegative().optional(),expected_bookings_revision:z.number().int().nonnegative().optional()}).strict().parse(await c.req.json());
  const id=c.req.param('id'),old=await c.env.DB.prepare('SELECT * FROM barbers WHERE id=?').bind(id).first<Row>();
  if(!old)throw new HTTPException(404,{message:'NOT_FOUND'});
  const future=await c.env.DB.prepare("SELECT count(*) n FROM bookings WHERE barber_id=? AND status IN('confirmed','pending') AND ends_at>unixepoch()").bind(id).first<{n:number}>();
- if((d.active===false||d.archived===true)&&future!.n&&d.future_action!=='keep')return c.json({error:'FUTURE_BOOKINGS',count:future!.n},409);
+ const disabling=d.active===false||d.archived===true;
+ if(d.future_action&&!disabling)throw new HTTPException(422,{message:'INVALID_INPUT'});
+ if(disabling&&future!.n&&!d.future_action)return c.json({error:'FUTURE_BOOKINGS',count:future!.n},409);
+ if(d.future_action==='cancel'&&(d.expected_future_count===undefined||d.expected_bookings_revision===undefined))throw new HTTPException(422,{message:'INVALID_INPUT'});
  const active=Number(d.active??Boolean(old.active)),archived=Number(d.archived??Boolean(old.archived)),online=Number(d.online_enabled??Boolean(old.online_enabled));
  if(active&&online&&!archived){
   const ready=await c.env.DB.prepare('SELECT (EXISTS(SELECT 1 FROM working_hours WHERE barber_id=?) AND EXISTS(SELECT 1 FROM barber_services WHERE barber_id=?)) ok').bind(id,id).first<{ok:number}>();
@@ -45,13 +49,26 @@ staff.patch('/owner/barbers/:id',ownerOnly,async c=>{
  }
  await c.env.DB.batch([
   ...guard(c.env.DB,'EXISTS(SELECT 1 FROM barbers WHERE id=? AND version=?)',id,d.version),
+  ...(disabling?guard(c.env.DB,"(SELECT count(*) FROM bookings WHERE barber_id=? AND status IN('confirmed','pending') AND ends_at>unixepoch())=?",id,d.expected_future_count??future!.n):[]),
+  ...(d.expected_bookings_revision!==undefined?guard(c.env.DB,'EXISTS(SELECT 1 FROM barbers WHERE id=? AND bookings_revision=?)',id,d.expected_bookings_revision):[]),
+  ...(d.future_action==='cancel'?[c.env.DB.prepare("UPDATE bookings SET status='cancelled',version=version+1 WHERE barber_id=? AND status IN('confirmed','pending') AND ends_at>unixepoch()").bind(id),audit(c.env.DB,c.get('identity').id,'barber.future.cancel',id)]:[]),
   c.env.DB.prepare('UPDATE barbers SET name=?,description=?,photo_url=?,active=?,archived=?,online_enabled=?,telegram_id=?,version=version+1 WHERE id=?')
    .bind(d.name??old.name,d.description??old.description,d.photo_url===undefined?old.photo_url:d.photo_url,active,archived,archived||!active?0:online,!active||archived||d.revoke_access?null:old.telegram_id,id),
   c.env.DB.prepare('DELETE FROM invitations WHERE barber_id=?').bind(id),audit(c.env.DB,c.get('identity').id,'barber.update',id)
  ]);
  return c.json({ok:true,future_count:future!.n});
 });
+staff.get('/owner/barbers/:id/future-bookings',ownerOnly,async c=>{
+ const id=c.req.param('id'),barber=await c.env.DB.prepare("SELECT b.*,(SELECT count(*) FROM bookings k WHERE k.barber_id=b.id AND k.status IN('confirmed','pending') AND k.ends_at>unixepoch()) future_count FROM barbers b WHERE id=?").bind(id).first<Row>();
+ if(!barber)throw new HTTPException(404,{message:'NOT_FOUND'});
+ const cursor=c.req.query('cursor');let after=0,last='';
+ if(cursor){const valid=z.string().regex(/^\d{1,12}\.[A-Za-z0-9_-]{1,80}$/).parse(cursor);const parts=valid.split('.');after=Number(parts[0]);last=parts[1];}
+ const rows=(await c.env.DB.prepare(`SELECT b.*,c.name client_name,c.phone,bm.name barber_name FROM bookings b JOIN clients c ON c.id=b.client_id JOIN barbers bm ON bm.id=b.barber_id
+  WHERE b.barber_id=? AND b.status IN('confirmed','pending') AND b.ends_at>unixepoch() AND (b.starts_at>? OR (b.starts_at=? AND b.id>?)) ORDER BY b.starts_at,b.id LIMIT 101`).bind(id,after,after,last).all<Row>()).results;
+ const items=rows.slice(0,100),tail=items.at(-1);return c.json({barber,items,next_cursor:rows.length>100?`${tail!.starts_at}.${tail!.id}`:null});
+});
 staff.post('/owner/barbers/:id/invitation',ownerOnly,async c=>{
+ if(!/^[A-Za-z0-9_]{5,32}$/.test(c.env.BOT_USERNAME||''))throw new HTTPException(409,{message:'TELEGRAM_NOT_CONFIGURED'});
  const id=c.req.param('id'),barber=await c.env.DB.prepare('SELECT * FROM barbers WHERE id=? AND active=1 AND archived=0').bind(id).first<Row>();
  if(!barber)throw new HTTPException(404,{message:'NOT_FOUND'});
  if(barber.telegram_id)throw new HTTPException(409,{message:'REVOKE_ACCESS_FIRST'});

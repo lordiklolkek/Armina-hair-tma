@@ -23,12 +23,12 @@ export async function getSlots(env:Env,serviceId:string,day:string,barberId:stri
  if(start<dayStart(localDay(nowSeconds()))||start>dayStart(localDay(nowSeconds()))+Number(setting!.advance_days)*86400)throw new HTTPException(422,{message:'DATE_UNAVAILABLE'});
  const barbers=(await env.DB.prepare(`SELECT b.id,COALESCE(?,bs.duration,s.duration) duration FROM barbers b
  JOIN barber_services bs ON bs.barber_id=b.id JOIN services s ON s.id=bs.service_id
- WHERE s.id=? AND s.active=1 AND b.active=1 AND b.archived=0 AND (?=1 OR b.online_enabled=1) AND (? IS NULL OR b.id=?) ORDER BY b.id`).bind(reschedule?(reschedule.ends_at-reschedule.starts_at)/60:null,serviceId,Number(manual),barberId,barberId).all<Row>()).results;
+ WHERE s.id=? AND (s.active=1 OR ?=1) AND b.active=1 AND b.archived=0 AND (?=1 OR b.online_enabled=1) AND (? IS NULL OR b.id=?) ORDER BY b.id`).bind(reschedule?(reschedule.ends_at-reschedule.starts_at)/60:null,serviceId,Number(Boolean(reschedule)),Number(manual),barberId,barberId).all<Row>()).results;
  const weekday=(new Date((start+14400)*1000).getUTCDay()+6)%7;
  const [hours,busy,away]=await env.DB.batch([
   env.DB.prepare(`SELECT w.* FROM effective_working_hours w WHERE w.day=? OR (w.day IS NULL AND w.weekday=?
    AND NOT EXISTS(SELECT 1 FROM schedule_overrides o WHERE o.barber_id=w.barber_id AND o.day=?))`).bind(day,weekday,day),
-  env.DB.prepare("SELECT barber_id,starts_at,ends_at FROM bookings WHERE status IN('confirmed','pending') AND starts_at<? AND ends_at>? AND (? IS NULL OR id!=?)").bind(start+86400,start,reschedule?.id||null,reschedule?.id||null),
+  env.DB.prepare("SELECT barber_id,client_id,starts_at,ends_at FROM bookings WHERE status IN('confirmed','pending') AND starts_at<? AND ends_at>? AND (? IS NULL OR id!=?)").bind(start+86400,start,reschedule?.id||null,reschedule?.id||null),
   env.DB.prepare('SELECT barber_id,starts_at,ends_at FROM absences WHERE starts_at<? AND ends_at>?').bind(start+86400,start)
  ]);
  const slots: {starts_at:number;barber_ids:string[]}[]=[];
@@ -37,7 +37,7 @@ export async function getSlots(env:Env,serviceId:string,day:string,barberId:stri
   const eligible=barbers.filter(b=>{
    const ends=starts+Number(b.duration)*60;
    return hours.results.some((h:any)=>h.barber_id===b.id&&min>=h.start_minute&&min+Number(b.duration)<=h.end_minute)
-    &&![...busy.results,...away.results].some((x:any)=>x.barber_id===b.id&&x.starts_at<ends&&x.ends_at>starts);
+    &&![...busy.results,...away.results].some((x:any)=>(x.barber_id===b.id||reschedule&&x.client_id===reschedule.client_id)&&x.starts_at<ends&&x.ends_at>starts);
   }).map(b=>b.id);
   if(eligible.length)slots.push({starts_at:starts,barber_ids:eligible});
  }
