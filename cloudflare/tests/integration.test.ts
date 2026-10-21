@@ -28,7 +28,7 @@ before(async()=>{
  for(const name of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await sqlFile(`migrations/${name}`);
 });
 beforeEach(async()=>{
- for(const table of ['outbox','notes','invitations','bookings','clients','working_hours','absences','barber_services','barbers','services','users','telegram_updates','rate_limits','audit_log'])await db.prepare(`DELETE FROM ${table}`).run();
+ for(const table of ['outbox','notes','invitations','bookings','clients','schedule_overrides','working_hours','absences','barber_services','barbers','services','users','telegram_updates','rate_limits','audit_log'])await db.prepare(`DELETE FROM ${table}`).run();
  await sqlFile('seeds/demo.sql');
 });
 after(async()=>{await mf?.dispose();});
@@ -168,4 +168,51 @@ test('demo rejects real contact fields and exhausted notification leases termina
  await db.prepare("INSERT INTO outbox(id,chat_id,text,state,attempts,lease_until) VALUES('exhausted',101,'test','sending',5,0)").run();
  await runNotifications(env,async()=>{throw Error('must not send');});
  assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='exhausted'").first<Row>())!.state,'failed');
+});
+
+const dayOf=(time:number)=>new Date((time+14400)*1000).toISOString().slice(0,10);
+const override=(day:string,hours:{start_minute:number;end_minute:number}[],version:number|null=null,id=1)=>request(`/api/staff/demo-a/schedule/dates/${day}`,id,'PUT',{hours,version});
+test('date-specific hours replace weekly hours and an empty override closes only that barber',async()=>{
+ const day=dayOf(slot()),readSlots=async(barber='demo-a')=>(await (await request(`/api/slots?service_id=cut&barber_id=${barber}&date=${day}`)).json() as Row).slots as Row[];
+ assert.equal((await override(day,[])).status,200);assert.equal((await readSlots()).length,0);
+ assert((await readSlots('demo-b')).some(s=>s.starts_at===slot()));assert.equal((await book(101)).status,409);
+ assert.equal((await request('/api/manual-bookings',1,'POST',{service_id:'cut',barber_id:'demo-a',starts_at:slot()},'closed_manual')).status,409);
+ assert.equal((await override(day,[{start_minute:1080,end_minute:1200}],1)).status,200);
+ const slots=await readSlots();assert(slots.some(s=>s.starts_at===slot(19)));assert(!slots.some(s=>s.starts_at===slot()));
+ assert.equal((await book(101,slot(19))).status,201);
+});
+test('date overrides open a weekly day off and reject conflicting edits or removal atomically',async()=>{
+ let start=slot();while(new Date((start+14400)*1000).getUTCDay()!==0)start+=86400;const day=dayOf(start);
+ assert.equal((await override(day,[{start_minute:600,end_minute:720}])).status,200);
+ const booking=await (await book(101,start)).json() as Row;assert(booking.id);
+ assert.equal((await request('/api/staff/demo-a/schedule',1,'PUT',{hours:[]})).status,200);
+ assert.equal((await override(day,[],1)).status,409);
+ assert.equal((await request(`/api/staff/demo-a/schedule/dates/${day}`,1,'DELETE',{version:1})).status,409);
+ let saved=await db.prepare("SELECT * FROM schedule_overrides WHERE barber_id='demo-a' AND day=?").bind(day).first<Row>();assert.equal(saved!.version,1);assert.equal(JSON.parse(saved!.hours_json)[0].start_minute,600);
+ assert.equal((await override(day,[{start_minute:600,end_minute:780}],1)).status,200);
+ assert.equal((await override(day,[{start_minute:600,end_minute:840}],1)).status,409);
+ saved=await db.prepare("SELECT version FROM schedule_overrides WHERE barber_id='demo-a' AND day=?").bind(day).first<Row>();assert.equal(saved!.version,2);
+ assert.equal((await request(`/api/bookings/${booking.id}`,101,'PATCH',{version:1,status:'cancelled'})).status,200);
+ assert.equal((await request(`/api/staff/demo-a/schedule/dates/${day}`,1,'DELETE',{version:2})).status,200);
+});
+test('date schedule validates dates, intervals and staff scope; split hours preserve full intervals',async()=>{
+ const day=dayOf(slot()),hours=[{start_minute:600,end_minute:660},{start_minute:690,end_minute:720}];
+ assert.equal((await override(day,hours,null,101)).status,403);
+ await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ assert.equal((await override(day,hours,null,201)).status,200);
+ assert.equal((await request(`/api/staff/demo-b/schedule/dates/${day}`,201,'PUT',{hours})).status,403);
+ for(const invalid of [[{start_minute:605,end_minute:600}],[{start_minute:600,end_minute:665},{start_minute:660,end_minute:720}],[{start_minute:601,end_minute:720}]])assert.equal((await override(day,invalid,1)).status,422);
+ assert.equal((await override('2027-02-30',hours)).status,422);
+ const slots=(await (await request(`/api/slots?service_id=cut&barber_id=demo-a&date=${day}`)).json() as Row).slots as Row[];
+ assert(slots.some(s=>s.starts_at===slot(10)+1800));assert(!slots.some(s=>s.starts_at===slot(10)+2100));assert(slots.some(s=>s.starts_at===slot(11)+1800));
+ await assert.rejects(()=>db.prepare("UPDATE schedule_overrides SET hours_json='[{\"start_minute\":600,\"end_minute\":660},{\"start_minute\":650,\"end_minute\":720}]' WHERE barber_id='demo-a' AND day=?").bind(day).run());
+});
+test('concurrent date edits and bookings cannot overwrite each other or leave visits outside hours',async()=>{
+ const day=dayOf(slot());const [booking,schedule]=await Promise.all([book(101),override(day,[])]);
+ const bookings=await db.prepare('SELECT id FROM bookings').all<Row>();
+ if(bookings.results.length){assert.equal(booking.status,201);assert.equal(schedule.status,409);}else{assert.equal(booking.status,409);assert.equal(schedule.status,200);}
+ assert.equal((await db.prepare('SELECT count(*) n FROM booking_schedule_violations').first<Row>())!.n,0);
+ const nextDay=dayOf(slot()+86400);
+ const results=await Promise.all([override(nextDay,[{start_minute:600,end_minute:720}]),override(nextDay,[{start_minute:900,end_minute:1020}])]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
 });
