@@ -55,6 +55,14 @@ export async function runNotifications(env:Env,send=telegramCall){
    WHERE id=? AND attempts<5 AND ((state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?)) RETURNING *`).bind(lease,nowSeconds()+120,id,nowSeconds(),nowSeconds()).first<Row>();
   if(!job)continue;
   if(!ids(env.DEMO_USER_IDS).includes(String(job.chat_id))){await env.DB.prepare("UPDATE outbox SET state='failed',last_error='NOT_DEMO_ACCOUNT' WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
+  if(job.booking_id&&!job.event_json&&id.startsWith(job.booking_id+':')){
+   const version=id.slice(String(job.booking_id).length+1).split(':')[0];
+   if(/^[1-9]\d*$/.test(version)){
+    const current=await env.DB.prepare('SELECT b.version,m.telegram_id,m.active,m.archived FROM bookings b JOIN barbers m ON m.id=b.barber_id WHERE b.id=?').bind(job.booking_id).first<Row>();
+    const reason=!current||Number(version)!==current.version?'SUPERSEDED':id.endsWith(':barber')&&(!current.active||current.archived||current.telegram_id!==job.chat_id)?'ACCESS_REVOKED':null;
+    if(reason){await env.DB.prepare("UPDATE outbox SET state='failed',last_error=?,lease_until=NULL WHERE id=? AND lease_token=?").bind(reason,id,lease).run();continue;}
+   }
+  }
   if(id.includes(':reminder:')){
    const current=await env.DB.prepare("SELECT id FROM bookings WHERE id=? AND status='confirmed' AND starts_at>? AND ? LIKE id||':'||version||':reminder:%'").bind(job.booking_id,nowSeconds(),id).first();
    if(!current){await env.DB.prepare("UPDATE outbox SET state='failed',last_error='SUPERSEDED' WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
