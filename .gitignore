@@ -20,3 +20,5 @@ node_modules/
 .dev.vars.*
 !.dev.vars.example
 dist/
+# Generated from the locked npm package; prepared by dev/test/build/deploy.
+cloudflare/public/vendor/
