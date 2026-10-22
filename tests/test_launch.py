@@ -63,6 +63,9 @@ async def test_render_restart_preserves_external_webhook_by_default(monkeypatch)
         pass
     assert calls == []
     monkeypatch.setenv("TELEGRAM_AUTO_CONFIGURE", "false")
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "a" * 40)
+    status = await main.migration_status()
+    assert status == {"guard": "37-migration-v1", "auto_configuration": False, "source_commit": "a" * 40}
     async with main.lifespan(main.app):
         pass
     assert calls == []
