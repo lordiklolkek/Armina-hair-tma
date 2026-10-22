@@ -29,3 +29,10 @@ test('verified contact is visible only in the assigned barber copy',()=>{
  assert(!renderNotice({...sample,kind:'transferred_away',audience:'barber',client_phone:phone},'ru').includes(phone));
  assert(renderNotice({...sample,audience:'barber',client_phone:phone},'hy').includes('Հեռախոս: '+phone));
 });
+
+test('live notices keep appointment details and omit demo disclaimer in both languages',()=>{
+ for(const language of ['hy','ru']){
+  const text=renderNotice({...sample,audience:'barber',client_phone:'+37499000000'},language,false);
+  assert(!/ԴԵՄՈ|ДЕМО|тестовый|փորձնական/.test(text));assert(text.includes(sample.barber_name));assert(text.includes('+37499000000'));
+ }
+});

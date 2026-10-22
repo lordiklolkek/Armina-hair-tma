@@ -850,3 +850,36 @@ test('owner block/unblock is atomic, preserves existing visits and rejects stale
  const manualAccess=await request(`/api/owner/clients/${manual.client_id}/access`,1,'PATCH',{blocked:true,expected_blocked:false});assert.equal(manualAccess.status,409);assert.equal((await manualAccess.json() as Row).error,'MANUAL_CLIENT');
  assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action IN('client.block','client.unblock')").first<Row>())!.n,2);
 });
+
+
+test('live mode admits signed customers outside demo list but preserves authentication and role isolation',async()=>{
+ const live={APP_MODE:'live'};
+ assert.equal((await request('/api/me',999,'GET',undefined,undefined,{})).status,403);
+ assert.equal((await request('/api/me',null,'GET',undefined,undefined,live)).status,401);
+ const me=await request('/api/me',999,'GET',undefined,undefined,live);assert.equal(me.status,200);
+ const who=await me.json() as Row;assert.equal(who.mode,'live');assert.equal(who.owner,false);assert.equal(who.barberId,null);assert.equal(who.displayName,'TEST');
+ assert.equal((await request('/api/owner/barbers',999,'GET',undefined,undefined,live)).status,403);
+ assert.equal((await request('/api/staff/demo-a/clients',999,'GET',undefined,undefined,live)).status,403);
+ assert.equal((await request('/api/me',999,'GET',undefined,undefined,{APP_MODE:'typo'})).status,503);
+ const config=await (await request('/api/config',null,'GET',undefined,undefined,live)).json() as Row;assert.equal(config.real_bookings,true);assert.equal(config.mode,'live');
+});
+
+test('live booking requires verified phone and stores authenticated Telegram client name',async()=>{
+ const live={APP_MODE:'live',CONTACT_VERIFICATION_ENABLED:'true'};
+ await request('/api/me',999,'GET',undefined,undefined,live);
+ const input={service_id:'cut',barber_id:'demo-a',starts_at:slot()};
+ const blocked=await request('/api/bookings',999,'POST',input,'live_phone_required',live);assert.equal(blocked.status,409);assert.equal((await blocked.json() as Row).error,'PHONE_REQUIRED');
+ await db.prepare('UPDATE users SET phone=?,phone_verified_at=unixepoch() WHERE telegram_id=999').bind('+37499000000').run();
+ const booked=await request('/api/bookings',999,'POST',input,'live_phone_verified',live);assert.equal(booked.status,201);
+ const client=await db.prepare("SELECT name,phone FROM clients WHERE telegram_id=999").first<Row>();assert.equal(client!.name,'TEST');assert.equal(client!.phone,'+37499000000');
+ const again=await request('/api/bookings',999,'POST',input,'live_phone_verified',live);assert.equal(again.status,201);assert.equal((await again.json() as Row).id,(await booked.json() as Row).id);
+});
+
+test('live webhook welcomes new accounts and notification queue delivers without demo restriction',async()=>{
+ const live={...env,APP_MODE:'live',APP_URL:'https://demo.test/'};
+ await processWebhook(live,secret,{update_id:900001,message:{from:{id:999},chat:{id:999,type:'private'},text:'/start'}});
+ const job=await db.prepare("SELECT text FROM outbox WHERE id='update:900001'").first<Row>();assert(job!.text.includes('37 Barbershop'));assert(!/ԴԵՄՈ|ցուցադրություն/.test(job!.text));
+ const sent:Row[]=[];await runNotifications(live,async(_e,m,p)=>{sent.push(p as Row);return {ok:true,code:200,retry_after:0};},'update:900001');
+ assert.equal(sent.length,1);assert.equal(sent[0].chat_id,999);assert.equal(sent[0].reply_markup.inline_keyboard[0][0].text,'Գրանցվել');
+ assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='update:900001'").first<Row>())!.state,'sent');
+});
