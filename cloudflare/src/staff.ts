@@ -69,6 +69,10 @@ staff.get('/owner/barbers/:id/future-bookings',ownerOnly,async c=>{
 });
 staff.post('/owner/barbers/:id/invitation',ownerOnly,async c=>{
  if(!c.env.WEBHOOK_SECRET||!/^[A-Za-z0-9_]{5,32}$/.test(c.env.BOT_USERNAME||''))throw new HTTPException(409,{message:'TELEGRAM_NOT_CONFIGURED'});
+ if(c.env.APP_URL){
+  const status=await c.env.DB.prepare("SELECT payload,checked_at FROM integration_status WHERE id='telegram'").first<Row>();
+  if(!status||status.checked_at<nowSeconds()-600||!JSON.parse(status.payload).webhook_matches)throw new HTTPException(409,{message:'TELEGRAM_NOT_CONFIGURED'});
+ }
  const id=c.req.param('id'),barber=await c.env.DB.prepare('SELECT * FROM barbers WHERE id=? AND active=1 AND archived=0').bind(id).first<Row>();
  if(!barber)throw new HTTPException(404,{message:'NOT_FOUND'});
  if(barber.telegram_id)throw new HTTPException(409,{message:'REVOKE_ACCESS_FIRST'});
