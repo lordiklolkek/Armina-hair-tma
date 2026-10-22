@@ -914,3 +914,22 @@ button[aria-busy=true]::after {
     transform:rotate(360deg)
   }
 }
+
+/* Keep asymmetric display cutouts clear, including landscape and narrow WebViews. */
+:root {
+  --safe-left:max(env(safe-area-inset-left,0px),var(--tg-safe-left,0px),var(--tg-content-left,0px));
+  --safe-right:max(env(safe-area-inset-right,0px),var(--tg-safe-right,0px),var(--tg-content-right,0px));
+}
+#nav {
+  left:calc(16px + var(--safe-left));
+  right:calc(16px + var(--safe-right));
+  width:auto;
+  transform:none;
+  margin-inline:auto;
+}
+@media(max-width:380px) {
+  .shell {
+    padding-left:calc(14px + var(--safe-left));
+    padding-right:calc(14px + var(--safe-right));
+  }
+}

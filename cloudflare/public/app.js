@@ -46,7 +46,7 @@ function chrome(){
 }
 async function refreshCatalog(){state.catalog=await api('/catalog');}
 function newFlow(){Object.assign(state,{view:'services',step:1,service:null,barber:null,date:null,time:null,key:null,editing:null,manual:false});return render();}
-async function render(){clearExportDownload();chrome();root.replaceChildren();root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
+async function render(){clearExportDownload();chrome();root.replaceChildren();window.scrollTo(0,0);root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
 function renderBooking(){
  if(state.step<5){const progress=el('ol',null,'booking-progress');progress.setAttribute('aria-label',t('bookingProgress'));for(const [i,key]of ['stepService','stepBarber','date','confirmStep'].entries()){const item=el('li',null,i+1===state.step?'current':i+1<state.step?'complete':'');item.append(el('span',String(i+1).padStart(2,'0'),'step-number'),el('span',t(key)));if(i+1===state.step)item.setAttribute('aria-current','step');progress.append(item);}root.append(progress);}
  if(state.step===1){
