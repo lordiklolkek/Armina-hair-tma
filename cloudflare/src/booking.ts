@@ -52,7 +52,7 @@ export async function createBooking(env:Env,identity:Identity,input:z.infer<type
  if(manual&&!identity.owner&&!identity.barberId)throw new HTTPException(403,{message:'FORBIDDEN'});
  if(manual&&(!input.barber_id||!identity.owner&&input.barber_id!==identity.barberId))throw new HTTPException(403,{message:'FORBIDDEN'});
  if(!manual&&env.CONTACT_VERIFICATION_ENABLED==='true'&&!await env.DB.prepare('SELECT telegram_id FROM users WHERE telegram_id=? AND phone IS NOT NULL AND phone_verified_at IS NOT NULL').bind(identity.id).first())throw new HTTPException(409,{message:'PHONE_REQUIRED'});
- // Closed demo stores invented names/numbers only. Real contact intake stays disabled.
+ // Visits keep invented demo names; only an explicitly verified Telegram contact may supply a phone.
  const clientId=manual?crypto.randomUUID():`tg:${identity.id}`;
  const candidates=(await env.DB.prepare(`SELECT b.id,COALESCE(bs.duration,s.duration) duration FROM barbers b
  JOIN barber_services bs ON bs.barber_id=b.id JOIN services s ON s.id=bs.service_id

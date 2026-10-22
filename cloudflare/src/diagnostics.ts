@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppEnv, Row } from './types';
 import { ownerOnly } from './auth';
 import { audit, guard, nowSeconds } from './booking';
+import { deferDelivery } from './delivery';
 
 export const diagnostics=new Hono<AppEnv>();
 const retryable=(error:unknown)=>error==='ATTEMPTS_EXHAUSTED'||/^TELEGRAM_(0|401|403|429|5\d\d)$/.test(String(error));
@@ -27,6 +28,7 @@ diagnostics.post('/owner/notifications/self-test',ownerOnly,async c=>{
   '37 Barbershop · Ծանուցումների փորձարկում։\nԲոտը կարող է ձեզ հաղորդագրություններ ուղարկել։ Սա առաքման ստուգում է․ իրական գրանցում չի ստեղծվել։';
  await c.env.DB.batch([c.env.DB.prepare('INSERT OR IGNORE INTO outbox(id,chat_id,text) VALUES(?,?,?)').bind(id,who.id,text),
   c.env.DB.prepare("INSERT OR IGNORE INTO audit_log(id,actor,action,entity_id) VALUES(?,?,'notification.selftest',?)").bind('audit:'+id,who.id,id)]);
+ deferDelivery(c,id);
  return c.json(await c.env.DB.prepare('SELECT id,state,attempts,last_error FROM outbox WHERE id=?').bind(id).first());
 });
 diagnostics.post('/owner/notifications/:id/retry',ownerOnly,async c=>{

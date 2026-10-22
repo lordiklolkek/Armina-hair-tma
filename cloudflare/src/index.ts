@@ -12,6 +12,8 @@ import { contact, contactEnabled } from './contact';
 import { checkBotConnection } from './bot-status';
 import { forwardLegacyCallback } from './legacy';
 import { runApprovedCutover } from './cutover';
+import { exports } from './exports';
+import { deferDelivery } from './delivery';
 import { processWebhook, runNotifications } from './telegram';
 
 export const app=new Hono<AppEnv>();
@@ -52,13 +54,7 @@ app.post('/telegram/webhook',async c=>{
  if(update.callback_query)await forwardLegacyCallback(c.env,update);
  else {
   await processWebhook(c.env,c.req.header('X-Telegram-Bot-Api-Secret-Token')!,update);
-  const delivery=runNotifications(c.env,undefined,`update:${update.update_id}`).catch(()=>{
-   // The persisted job remains retryable; never log the update or recipient.
-   console.error(JSON.stringify({event:'telegram_reply_deferred'}));
-  });
-  let execution:{waitUntil(promise:Promise<unknown>):void}|undefined;
-  try{execution=c.executionCtx;}catch{/* Direct test requests have no context. */}
-  if(execution)execution.waitUntil(delivery);else await delivery;
+  deferDelivery(c,`update:${update.update_id}`);
  }
  return c.json({ok:true});
 });
@@ -77,8 +73,14 @@ app.get('/api/slots',async c=>{
  }
  return c.json({slots:await getSlots(c.env,service,day,barber,reschedule,manual||Boolean(reschedule&&who.owner))});
 });
-app.post('/api/bookings',async c=>c.json(await createBooking(c.env,c.get('identity'),bookingInput.parse(await c.req.json()),c.req.header('Idempotency-Key')||''),201));
-app.post('/api/manual-bookings',async c=>c.json(await createBooking(c.env,c.get('identity'),bookingInput.parse(await c.req.json()),c.req.header('Idempotency-Key')||'',true),201));
+app.post('/api/bookings',async c=>{
+ const visit=await createBooking(c.env,c.get('identity'),bookingInput.parse(await c.req.json()),c.req.header('Idempotency-Key')||'');
+ deferDelivery(c,'booking:'+visit.id);return c.json(visit,201);
+});
+app.post('/api/manual-bookings',async c=>{
+ const visit=await createBooking(c.env,c.get('identity'),bookingInput.parse(await c.req.json()),c.req.header('Idempotency-Key')||'',true);
+ deferDelivery(c,'booking:'+visit.id);return c.json(visit,201);
+});
 app.get('/api/bookings',async c=>{
  const who=c.get('identity'),mode=c.req.query('scope')||'mine';
  let condition='c.telegram_id=?',param:any=who.id;
@@ -106,12 +108,13 @@ app.patch('/api/bookings/:id',async c=>{
   ...guard(c.env.DB,'EXISTS(SELECT 1 FROM bookings WHERE id=? AND version=? AND status IN(\'pending\',\'confirmed\'))',id,d.version),
   c.env.DB.prepare('UPDATE bookings SET barber_id=?,starts_at=?,ends_at=?,status=?,final_price=?,version=version+1 WHERE id=?').bind(d.barber_id??old.barber_id,start,end,d.status??old.status,d.final_price??old.final_price,id),audit(c.env.DB,who.id,'booking.update',id)
  ]);
- return c.json({ok:true,version:d.version+1});
+ deferDelivery(c,'booking:'+id);return c.json({ok:true,version:d.version+1});
 });
 app.route('/api',staff);
 app.route('/api',calendar);
 app.route('/api',diagnostics);
 app.route('/api',contact);
+app.route('/api',exports);
 app.get('/api/owner/diagnostics',ownerOnly,async c=>c.json((await c.env.DB.prepare('SELECT state,count(*) count FROM outbox GROUP BY state').all()).results));
 app.get('/api/owner/telegram-status',ownerOnly,async c=>{
  const cached=await c.env.DB.prepare("SELECT payload,checked_at FROM integration_status WHERE id='telegram'").first<Row>();

@@ -65,10 +65,10 @@ export async function processWebhook(env:Env,secret:string,update:Row){
   throw error;
  }
 }
-export async function runNotifications(env:Env,send=telegramCall,replyId?:string){
+export async function runNotifications(env:Env,send=telegramCall,target?:string){
  if(env.APP_MODE!=='demo'||!env.BOT_TOKEN)return;
- if(replyId&&!/^update:\d+$/.test(replyId))return;
- if(!replyId){
+ if(target&&!/^(?:update:\d+|selftest:\d+:\d+|booking:[A-Za-z0-9_-]{1,80})$/.test(target))return;
+ if(!target){
  await env.DB.prepare("UPDATE outbox SET state='failed',last_error='ATTEMPTS_EXHAUSTED' WHERE attempts>=5 AND state IN('pending','sending') AND (lease_until IS NULL OR lease_until<?)").bind(nowSeconds()).run();
  // A bounded batch keeps each tick below the free invocation query limit.
  for(const [suffix,seconds,min] of [['24h',86400,7200],['2h',7200,0]] as const){
@@ -78,9 +78,10 @@ export async function runNotifications(env:Env,send=telegramCall,replyId?:string
    WHERE b.status='confirmed' AND b.starts_at>unixepoch()+? AND b.starts_at<=unixepoch()+?`).bind(suffix,suffix==='24h'?'reminder24h':'reminder2h',min,seconds).run();
  }
  }
- // Webhook replies bypass the five-minute cron delay but can claim only their
- // own persisted job. The same lease protects against cron/retry races.
- const due=replyId?(await env.DB.prepare("SELECT id FROM outbox WHERE id=? AND ((state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?))").bind(replyId,nowSeconds(),nowSeconds()).all<{id:string}>()).results:
+ // Mutations send at most two matching jobs without running reminders or
+ // maintenance. Remaining jobs and failures are handled by the normal cron.
+ const booking=target?.startsWith('booking:');
+ const due=target?(await env.DB.prepare(`SELECT id FROM outbox WHERE ${booking?'booking_id':'id'}=? AND ((state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?)) ORDER BY next_attempt_at,rowid LIMIT 2`).bind(booking?target.slice(8):target,nowSeconds(),nowSeconds()).all<{id:string}>()).results:
   (await env.DB.prepare("SELECT id FROM outbox WHERE (state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?) ORDER BY next_attempt_at LIMIT 5").bind(nowSeconds(),nowSeconds()).all<{id:string}>()).results;
  for(const {id} of due){
   const lease=crypto.randomUUID();
@@ -109,6 +110,11 @@ export async function runNotifications(env:Env,send=telegramCall,replyId?:string
     if(payload.audience==='barber'&&!await env.DB.prepare('SELECT id FROM barbers WHERE id=? AND telegram_id=? AND active=1 AND archived=0').bind(payload.recipient_barber_id??'',job.chat_id).first()){
      await env.DB.prepare("UPDATE outbox SET state='failed',last_error='ACCESS_REVOKED',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;
     }
+    if(payload.audience==='barber'){
+     const contact=await env.DB.prepare(`SELECT c.phone FROM bookings b JOIN clients c ON c.id=b.client_id JOIN users u ON u.telegram_id=c.telegram_id
+      WHERE b.id=? AND b.barber_id=? AND u.phone_verified_at IS NOT NULL AND c.phone=u.phone`).bind(job.booking_id,payload.recipient_barber_id??'').first<Row>();
+     payload.client_phone=contact?.phone||null;
+    }else delete payload.client_phone;
     const user=await env.DB.prepare('SELECT language FROM users WHERE telegram_id=?').bind(job.chat_id).first<{language:string}>();text=renderNotice(payload,user?.language);
    }
    catch{await env.DB.prepare("UPDATE outbox SET state='failed',last_error='INVALID_PAYLOAD',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
@@ -128,5 +134,5 @@ export async function runNotifications(env:Env,send=telegramCall,replyId?:string
   await env.DB.prepare('UPDATE outbox SET text=?,state=?,last_error=?,next_attempt_at=?,lease_until=NULL WHERE id=? AND lease_token=?')
    .bind(text,result.ok?'sent':failed?'failed':'pending',result.ok?null:`TELEGRAM_${result.code}`,nowSeconds()+Math.max(result.retry_after||0,Math.min(3600,30*2**Number(job.attempts))),id,lease).run();
  }
- if(!replyId)await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
+ if(!target)await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
 }
