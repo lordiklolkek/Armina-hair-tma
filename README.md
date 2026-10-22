@@ -2,7 +2,7 @@
 
 Новая изолированная версия TypeScript/Hono/Workers/D1 находится в [cloudflare/](cloudflare/README.md). Состояние разработки и точка продолжения: [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md). Руководства и сценарий закрытого показа: [cloudflare/OPERATIONS.md](cloudflare/OPERATIONS.md).
 
-Неофициальная демонстрация с вымышленными данными размещена отдельно: https://barbershop-37-demo.barbershop-37.workers.dev. HTTPS-каталог и облачная D1 проверены; вход владельца в Telegram подтверждён, но webhook ещё на Render; реальные записи отключены. Исходная версия FastAPI/Render ниже сохранена для восстановления и перехода.
+Неофициальная демонстрация с вымышленными данными размещена отдельно: https://barbershop-37-demo.barbershop-37.workers.dev. HTTPS-каталог и облачная D1 проверены; webhook и меню бота работают через Cloudflare; вход владельца, контакт, приглашение и тестовые визиты проверены собственным аккаунтом в Telegram. Реальные записи отключены. Исходная версия FastAPI/Render ниже сохранена для восстановления и перехода.
 
 # Armina Hair — исходная версия Telegram Mini App
 
