@@ -5,7 +5,7 @@ const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();setupTelegramAppearanc
 const $=id=>document.getElementById(id),root=$('content');
 let language=localStorage.getItem('37-language')==='ru'?'ru':'hy';
 const state={moved:false,view:'services',step:1,config:{},catalog:{services:[],barbers:[],links:[],absences:[]},me:null,service:null,barber:null,preferredBarber:null,date:null,time:null,key:null,editing:null,manual:false,staffId:null,request:0};
-const t=k=>words[language][k]||k;
+const t=k=>(state.config.real_bookings&&words[language].live?.[k])||words[language][k]||k;
 const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!==undefined&&text!==null)node.textContent=text;if(cls)node.className=cls;return node;};
 const title=s=>s[`title_${language}`];
 const amd=v=>new Intl.NumberFormat(language==='hy'?'hy-AM':'ru-RU').format(v)+' ֏';
@@ -35,7 +35,7 @@ function chrome(){
  $('nav').setAttribute('aria-label',t('navigation'));
  if(tg?.BackButton){if(state.view==='services'&&state.step>1&&state.step<5)tg.BackButton.show();else tg.BackButton.hide();}
  document.documentElement.lang=language;$('language').textContent=language==='hy'?'RU':'ՀԱՅ';
- $('demo').textContent=t(state.config.contact_verification?'demoWithContact':'demo');$('hero-label').textContent=t('heroLabel');$('hero-title').textContent=t('heroTitle');$('hero-copy').textContent=t('heroCopy');$('address').textContent=state.config.address||'Շահումյան 33, Կապան, Հայաստան';$('city').textContent=language==='hy'?'ԿԱՊԱՆ · ՀԱՅԱՍՏԱՆ':'КАПАН · АРМЕНИЯ';
+ $('demo').hidden=Boolean(state.config.real_bookings);$('demo').textContent=t(state.config.contact_verification?'demoWithContact':'demo');$('hero-label').textContent=t('heroLabel');$('hero-title').textContent=t('heroTitle');$('hero-copy').textContent=t('heroCopy');$('address').textContent=state.config.address||'Շահումյան 33, Կապան, Հայաստան';$('city').textContent=language==='hy'?'ԿԱՊԱՆ · ՀԱՅԱՍՏԱՆ':'КАПАН · АРМЕНИЯ';
  $('footer').replaceChildren(el('span','37 BARBERSHOP'),el('span',t('timezone')));
  const privacy=el('details',null,'privacy');privacy.append(el('summary',t('privacyTitle')),...['privacyProcessing','privacyAccess','privacyRequests'].map(key=>el('p',t(key))));$('footer').append(privacy);
  if(state.config.logo_url){const image=el('img');image.src=state.config.logo_url;image.alt=state.config.name;image.style.cssText='max-width:52px;max-height:52px';$('logo').replaceChildren(image);}
@@ -64,7 +64,7 @@ function renderBooking(){
   state.catalog.services.forEach((service,i)=>{
    const b=button('',()=>{state.service=service;const preferred=state.preferredBarber&&state.catalog.links.some(l=>l.barber_id===state.preferredBarber&&l.service_id===service.id);state.barber=state.manual?state.staffId:preferred?state.preferredBarber:null;state.step=state.manual||preferred?3:2;state.time=null;state.key=null;return render();},'service');
    b.append(el('span',String(i+1).padStart(2,'0'),'service-icon'));const info=el('div',null,'service-info');info.append(el('strong',title(service)));const meta=el('div',null,'meta');meta.append(icon('clock'),el('span',`${service.duration} ${t('min')}`));info.append(meta);if(service['description_'+language])info.append(el('p',service['description_'+language],'muted'));const end=el('span',null,'service-end');end.append(el('span',price(service),'service-price'),icon('arrow'));b.append(info,end);root.append(b);
-  });root.append(el('p',t('durationNote'),'muted'));return;
+  });if(!state.config.real_bookings)root.append(el('p',t('durationNote'),'muted'));return;
  }
  if(state.step===2){
   root.append(button('‹ '+t('back'),()=>{state.step=1;return render();},'plain'));heading(t('barber'),title(state.service));
