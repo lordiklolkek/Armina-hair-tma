@@ -4,7 +4,7 @@ import {bookingLink,linkedBarber,qrPixels} from './links.js';
 const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();setupTelegramAppearance(tg);
 const $=id=>document.getElementById(id),root=$('content');
 let language=localStorage.getItem('37-language')==='ru'?'ru':'hy';
-const state={view:'services',step:1,config:{},catalog:{services:[],barbers:[],links:[],absences:[]},me:null,service:null,barber:null,preferredBarber:null,date:null,time:null,key:null,editing:null,manual:false,staffId:null,request:0};
+const state={moved:false,view:'services',step:1,config:{},catalog:{services:[],barbers:[],links:[],absences:[]},me:null,service:null,barber:null,preferredBarber:null,date:null,time:null,key:null,editing:null,manual:false,staffId:null,request:0};
 const t=k=>words[language][k]||k;
 const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!==undefined&&text!==null)node.textContent=text;if(cls)node.className=cls;return node;};
 const title=s=>s[`title_${language}`];
@@ -46,7 +46,16 @@ function chrome(){
 }
 async function refreshCatalog(){state.catalog=await api('/catalog');}
 async function newFlow(){Object.assign(state,{view:'services',step:1,service:null,barber:null,date:null,time:null,key:null,editing:null,manual:false});await refreshCatalog();return render();}
-async function render(){clearExportDownload();chrome();root.replaceChildren();window.scrollTo(0,0);root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
+function renderBotMoved(){
+ const box=el('section',null,'card');box.append(el('h2',t('botMovedTitle')),el('p',t('botMovedCopy'),'muted'));
+ const username=state.config.telegram_bot_username;
+ if(/^[A-Za-z0-9_]{5,32}$/.test(username||'')){
+  const payload=/^[A-Za-z0-9_-]{1,57}$/.test(state.preferredBarber||'')?'barber_'+state.preferredBarber:'booking';
+  const link=el('a',t('openNewBot')+' @'+username,'primary link'),url=`https://t.me/${username}?start=${payload}`;
+  link.href=url;link.addEventListener('click',event=>{if(tg?.openTelegramLink){event.preventDefault();tg.openTelegramLink(url);}});box.append(link);
+ }root.append(box);
+}
+async function render(){clearExportDownload();chrome();root.replaceChildren();window.scrollTo(0,0);root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;if(state.moved){renderBotMoved();return;}try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
 function renderBooking(){
  if(state.step<5){const progress=el('ol',null,'booking-progress');progress.setAttribute('aria-label',t('bookingProgress'));for(const [i,key]of ['stepService','stepBarber','date','confirmStep'].entries()){const item=el('li',null,i+1===state.step?'current':i+1<state.step?'complete':'');item.append(el('span',String(i+1).padStart(2,'0'),'step-number'),el('span',t(key)));if(i+1===state.step)item.setAttribute('aria-current','step');progress.append(item);}root.append(progress);}
  if(state.step===1){
@@ -371,5 +380,5 @@ function renderLinks(panel,barberId=null){
 $('book-now').addEventListener('click',()=>{root.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'});root.querySelector('.service')?.focus({preventScroll:true});});
 tg?.BackButton?.onClick(()=>{if(state.view==='services'&&state.step>1&&state.step<5){state.step--;void render();}});
 $('language').addEventListener('click',async()=>{const control=$('language');control.disabled=true;try{const next=language==='hy'?'ru':'hy';if(state.me)await api('/me/language','PUT',{language:next});language=next;localStorage.setItem('37-language',language);await render();}catch(error){toast(error.message);}finally{control.disabled=false;}});
-async function start(){chrome();root.append(el('div',t('loading'),'loading'));try{state.config=await api('/config');await refreshCatalog();if(tg?.initData){try{state.me=await api('/me');language=state.me.language==='ru'?'ru':'hy';localStorage.setItem('37-language',language);}catch(e){toast(e.message);}}state.preferredBarber=linkedBarber(location.search,tg?.initDataUnsafe?.start_param,state.catalog.barbers.map(b=>b.id));await render();}catch(error){root.replaceChildren(el('p',error.message,'notice'));}}
+async function start(){chrome();root.append(el('div',t('loading'),'loading'));try{state.config=await api('/config');await refreshCatalog();if(tg?.initData){try{state.me=await api('/me');language=state.me.language==='ru'?'ru':'hy';localStorage.setItem('37-language',language);}catch(e){if(state.config.bot_replacement_active&&e.code==='AUTH_REQUIRED')state.moved=true;else toast(e.message);}}state.preferredBarber=linkedBarber(location.search,tg?.initDataUnsafe?.start_param,state.catalog.barbers.map(b=>b.id));await render();}catch(error){root.replaceChildren(el('p',error.message,'notice'));}}
 void start();
