@@ -1,3 +1,4 @@
+import { queueOperationalAlert } from '../src/ops';
 import { updateArmenianMenu } from '../src/menu';
 import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -285,7 +286,7 @@ test('expired and concurrently claimed invitations are acknowledged without rebi
 test('bot connection monitoring uses only read methods and exposes no credentials',async()=>{
  const methods:string[]=[];
  const status=await checkBotConnection({...env,APP_URL:'https://demo.test/'},async(_env,method)=>{methods.push(method);return {ok:true,result:method==='getMe'?{username:'TestOnly_Bot',id:123}:{url:'https://demo.test/telegram/webhook',pending_update_count:2,last_error_message:'PRIVATE ERROR MUST NOT BE EXPOSED'}};});
- assert.deepEqual(methods,['getMe','getWebhookInfo']);assert.equal(status!.webhook_matches,true);
+ assert.deepEqual(methods,['getMe','getWebhookInfo','getChatMenuButton']);assert.equal(status!.webhook_matches,true);
  assert.equal((await request('/api/owner/telegram-status',101)).status,403);
  const exposed=await (await request('/api/owner/telegram-status',1)).json() as Row;assert.equal(exposed.pending_updates,2);assert(!JSON.stringify(exposed).includes('PRIVATE ERROR'));assert(!JSON.stringify(exposed).includes(token));
 });
@@ -309,6 +310,29 @@ test('health, public demo catalog and private signed API',async()=>{
  assert.equal((await request('/api/me',101,'GET',undefined,undefined,{APP_MODE:'production'})).status,503);
  assert.equal((await request('/api/owner/barbers',101)).status,403);
 });
+test('operational alerts require explicit enablement and prefer an allowed delegated administrator',async()=>{
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,state,last_error) VALUES('problem',101,'PRIVATE CUSTOMER DATA','failed','TELEGRAM_403')").run();
+ await queueOperationalAlert(env);assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE id LIKE 'ops:%'").first<Row>())!.n,0);
+ const configured={...env,OPS_ALERTS_ENABLED:'true',ADMIN_IDS:'202'};
+ await Promise.all([queueOperationalAlert(configured),queueOperationalAlert(configured)]);
+ const alerts=(await db.prepare("SELECT * FROM outbox WHERE id LIKE 'ops:%'").all<Row>()).results;
+ assert.equal(alerts.length,1);assert.equal(alerts[0].chat_id,202);assert(!alerts[0].text.includes('PRIVATE'));assert(!/[А-Яа-яЁё]/.test(alerts[0].text));
+});
+
+test('operational monitoring ignores superseded revoked and its own failed alerts',async()=>{
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,state,last_error) VALUES('old',101,'old','failed','SUPERSEDED'),('revoked',201,'old','failed','ACCESS_REVOKED'),('ops:old',1,'old','failed','TELEGRAM_403')").run();
+ await queueOperationalAlert({...env,OPS_ALERTS_ENABLED:'true'},{ok:true,webhook_matches:true,last_error_at:null});
+ assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE id LIKE 'ops:%'").first<Row>())!.n,1);
+});
+
+test('operational monitoring reports delayed jobs and connection problems without contacting unapproved users',async()=>{
+ const configured={...env,OPS_ALERTS_ENABLED:'true',ADMIN_IDS:'999'};
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,next_attempt_at) VALUES('late',101,'PRIVATE PHONE',unixepoch()-900)").run();
+ await queueOperationalAlert(configured,{ok:false,webhook_matches:false});
+ const alert=await db.prepare("SELECT chat_id,text FROM outbox WHERE id LIKE 'ops:%'").first<Row>();
+ assert.equal(alert!.chat_id,1);assert(alert!.text.includes('Telegram'));assert(alert!.text.includes('ուշանում'));assert(!alert!.text.includes('PRIVATE'));
+});
+
 test('Armenian menu update is explicitly enabled and changes only the verified existing label once',async()=>{
  let calls=0,changed=false;const url='https://demo.test/';
  const call=async(_e:Env,method:string,p:Row)=>{calls++;
