@@ -3,7 +3,7 @@ export interface Env {
  OWNER_IDS?: string; DEMO_USER_IDS?: string; APP_MODE: string; BOT_USERNAME?: string; MINI_APP_URL?: string;
  ADMIN_IDS?: string; APP_URL?: string; CONTACT_VERIFICATION_ENABLED?: string; TELEGRAM_LINKS_ENABLED?: string;
  LEGACY_WEBHOOK_SECRET?: string; LEGACY_CALLBACK_FORWARDING_ENABLED?: string;
- TELEGRAM_CUTOVER_REQUEST?: string; RENDER_GUARD_COMMIT?: string; LEGACY_CALLBACKS_RETIRED?: string;
+ TELEGRAM_MENU_LABEL_REQUEST?: string; TELEGRAM_CUTOVER_REQUEST?: string; RENDER_GUARD_COMMIT?: string; LEGACY_CALLBACKS_RETIRED?: string;
 }
 export interface Identity { id: number; owner: boolean; barberId: string | null; language: 'hy'|'ru' }
 export type AppEnv = { Bindings: Env; Variables: { identity: Identity } };

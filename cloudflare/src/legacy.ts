@@ -10,7 +10,7 @@ export async function forwardLegacyCallback(env:Env,update:Row,send:typeof fetch
   if(!env.BOT_TOKEN)throw new HTTPException(503,{message:'LEGACY_CALLBACK_UNAVAILABLE'});
   {
    try{
-    const response=await send(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callback_query_id:query.id,text:'Նախորդ ցուցադրության կոճակ է։ Բացեք 37 Barbershop-ը բոտի ցանկից։ / Это кнопка старой демоверсии. Откройте 37 Barbershop через меню бота.',show_alert:true}),signal:AbortSignal.timeout(8000)});
+    const response=await send(`https://api.telegram.org/bot${env.BOT_TOKEN}/answerCallbackQuery`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callback_query_id:query.id,text:'Նախորդ ցուցադրության կոճակ է։ Բացեք 37 Barbershop-ը բոտի ցանկից։',show_alert:true}),signal:AbortSignal.timeout(8000)});
     const result=await response.json() as Row;if(!response.ok||!result.ok)throw Error();
    }catch{throw new HTTPException(503,{message:'LEGACY_CALLBACK_UNAVAILABLE'});}
   }

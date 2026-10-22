@@ -34,7 +34,7 @@ export async function runApprovedCutover(env:Env,call=telegram,readGuard=renderG
   await call(env,'setWebhook',{url:target,secret_token:env.WEBHOOK_SECRET,allowed_updates:['message','callback_query'],drop_pending_updates:false,max_connections:2});
   const verified=await call(env,'getWebhookInfo',{});if(verified?.url!==target)throw Error('WEBHOOK_NOT_VERIFIED');
   step='menu';
-  await call(env,'setChatMenuButton',{menu_button:{type:'web_app',text:'37 Barbershop',web_app:{url:origin.origin}}});
+  await call(env,'setChatMenuButton',{menu_button:{type:'web_app',text:'Գրանցվել',web_app:{url:origin.origin}}});
   const menu=await call(env,'getChatMenuButton',{});if(menu?.web_app?.url!==origin.origin&&menu?.web_app?.url!==origin.origin+'/')throw Error('MENU_NOT_VERIFIED');
   await env.DB.prepare('UPDATE integration_status SET payload=?,checked_at=? WHERE id=?').bind(JSON.stringify({state:'complete',step:'verified',checked_at:nowSeconds()}),nowSeconds(),id).run();
  }catch{

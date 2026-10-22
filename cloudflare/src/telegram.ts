@@ -5,12 +5,12 @@ import { HTTPException } from 'hono/http-exception';
 import { renderNotice } from './messages';
 import { verifiedContactStatements, contactEnabled } from './contact';
 
-export function launchKeyboard(env:Env,language:string,barberId?:string){
+export function launchKeyboard(env:Env,_language:string,barberId?:string){
  try{
   const url=new URL(env.APP_URL||'');
   if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)return null;
   if(barberId)url.searchParams.set('barber',barberId);
-  return {inline_keyboard:[[{text:language==='ru'?'Открыть 37 Barbershop':'Բացել 37 Barbershop',web_app:{url:url.toString()}}]]};
+  return {inline_keyboard:[[{text:'Գրանցվել',web_app:{url:url.toString()}}]]};
  }catch{return null;}
 }
 
@@ -32,7 +32,6 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  const existing=await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first();if(existing)return;
  const text=String(message.text||''),invite=/^\/start(?:@\w+)? join_([a-f0-9]{32})$/.exec(text);
  const preferred=/^\/start(?:@\w+)? barber_([A-Za-z0-9_-]{1,57})$/.exec(text);
- const user=await env.DB.prepare('SELECT language FROM users WHERE telegram_id=?').bind(actor).first<{language:string}>();
  const base=()=>[env.DB.prepare('INSERT INTO telegram_updates(update_id) VALUES(?)').bind(update.update_id),env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(actor)];
  const statements:D1PreparedStatement[]=base();
  if(invite){
@@ -45,11 +44,9 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  }
  const verification=message.contact?verifiedContactStatements(env,update,actor):null;
  if(verification)statements.push(...verification);
- const invalid=user?.language==='ru'?(invite?'Приглашение недействительно, уже использовано или доступ отозван. Попросите администратора создать новое.':'Номер не подтверждён. Откройте приложение, нажмите подтверждение номера и поделитесь собственным контактом через Telegram.'):
-  (invite?'Հրավերն անվավեր է, արդեն օգտագործված է կամ մուտքը չեղարկված է։ Խնդրեք ադմինիստրատորին ստեղծել նորը։':'Համարը հաստատված չէ։ Բացեք հավելվածը, սկսեք համարի հաստատումը և Telegram-ի միջոցով ուղարկեք ձեր սեփական կոնտակտը։');
- const response=user?.language==='ru'?(invite?'ДЕМО · Доступ подтверждён.':message.contact?verification?'Номер подтверждён через Telegram.':contactEnabled(env)?invalid:'ДЕМО · Настоящие номера не сохраняются.':'37 Barbershop · Неофициальная демонстрация. Реальные записи не принимаются.'):
-  (invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':contactEnabled(env)?invalid:'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։');
- const keyboard=launchKeyboard(env,user?.language||'hy',preferred?.[1]);
+ const invalid=invite?'Հրավերն անվավեր է, արդեն օգտագործված է կամ մուտքը չեղարկված է։ Խնդրեք ադմինիստրատորին ստեղծել նորը։':'Համարը հաստատված չէ։ Բացեք հավելվածը, սկսեք համարի հաստատումը և Telegram-ի միջոցով ուղարկեք ձեր սեփական կոնտակտը։';
+ const response=invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':contactEnabled(env)?invalid:'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։';
+ const keyboard=launchKeyboard(env,'hy',preferred?.[1]);
  const reply=(body:string)=>env.DB.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,?,?,?)').bind(`update:${update.update_id}`,actor,body,keyboard?JSON.stringify(keyboard):null);
  statements.push(reply(response));
  try{await env.DB.batch(statements);}catch(error){
@@ -73,7 +70,7 @@ export async function runNotifications(env:Env,send=telegramCall,target?:string)
  // A bounded batch keeps each tick below the free invocation query limit.
  for(const [suffix,seconds,min] of [['24h',86400,7200],['2h',7200,0]] as const){
   await env.DB.prepare(`INSERT OR IGNORE INTO outbox(id,booking_id,chat_id,text,event_json)
-   SELECT b.id||':'||b.version||':reminder:'||?,b.id,u.telegram_id,CASE u.language WHEN 'ru' THEN 'ДЕМО · Напоминание: '||b.title_ru ELSE 'ԴԵՄՈ · Հիշեցում՝ '||b.title_hy END||' · '||strftime('%d.%m.%Y %H:%M',b.starts_at,'unixepoch','+4 hours'),json_set(s.payload,'$.kind',?,'$.audience','client')
+   SELECT b.id||':'||b.version||':reminder:'||?,b.id,u.telegram_id,'ԴԵՄՈ · Հիշեցում՝ '||b.title_hy||' · '||strftime('%d.%m.%Y %H:%M',b.starts_at,'unixepoch','+4 hours'),json_set(s.payload,'$.kind',?,'$.audience','client')
    FROM bookings b JOIN clients c ON c.id=b.client_id JOIN users u ON u.telegram_id=c.telegram_id JOIN booking_notification_snapshot s ON s.id=b.id
    WHERE b.status='confirmed' AND b.starts_at>unixepoch()+? AND b.starts_at<=unixepoch()+?`).bind(suffix,suffix==='24h'?'reminder24h':'reminder2h',min,seconds).run();
  }
@@ -115,7 +112,8 @@ export async function runNotifications(env:Env,send=telegramCall,target?:string)
       WHERE b.id=? AND b.barber_id=? AND u.phone_verified_at IS NOT NULL AND c.phone=u.phone`).bind(job.booking_id,payload.recipient_barber_id??'').first<Row>();
      payload.client_phone=contact?.phone||null;
     }else delete payload.client_phone;
-    const user=await env.DB.prepare('SELECT language FROM users WHERE telegram_id=?').bind(job.chat_id).first<{language:string}>();text=renderNotice(payload,user?.language);
+    // Chat language is always Armenian; the Mini App language remains independent.
+    text=renderNotice(payload,'hy');
    }
    catch{await env.DB.prepare("UPDATE outbox SET state='failed',last_error='INVALID_PAYLOAD',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
   }
@@ -125,8 +123,14 @@ export async function runNotifications(env:Env,send=telegramCall,target?:string)
     markup=JSON.parse(job.reply_markup);
     // Compare to a server-built keyboard, never trust an arbitrary stored URL.
     const url=new URL((markup as Row).inline_keyboard?.[0]?.[0]?.web_app?.url||'');
-    const expected=launchKeyboard(env,(markup as Row).inline_keyboard?.[0]?.[0]?.text==='Открыть 37 Barbershop'?'ru':'hy',url.searchParams.get('barber')||undefined);
-    if(!expected||JSON.stringify(expected)!==JSON.stringify(markup))throw Error();
+    const expected=launchKeyboard(env,'hy',url.searchParams.get('barber')||undefined);
+    // Accept exactly the two previously issued labels for queued messages,
+    // while keeping the server-generated structure and URL comparison strict.
+    const label=(markup as Row).inline_keyboard?.[0]?.[0]?.text;
+    if(!expected||!['Գրանցվել','Открыть 37 Barbershop','Բացել 37 Barbershop'].includes(label))throw Error();
+    const legacy={inline_keyboard:[[{...expected.inline_keyboard[0][0],text:label}]]};
+    if(JSON.stringify(legacy)!==JSON.stringify(markup))throw Error();
+    markup=expected;
    }catch{await env.DB.prepare("UPDATE outbox SET state='failed',last_error='INVALID_PAYLOAD',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
   }
   const result=await send(env,'sendMessage',{chat_id:job.chat_id,text,...(markup?{reply_markup:markup}:{})});

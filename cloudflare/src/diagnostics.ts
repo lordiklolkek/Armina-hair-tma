@@ -24,8 +24,7 @@ diagnostics.post('/owner/notifications/self-test',ownerOnly,async c=>{
  z.object({}).strict().parse(await c.req.json());
  if(!c.env.BOT_TOKEN)throw new HTTPException(503,{message:'TELEGRAM_NOT_CONFIGURED'});
  const who=c.get('identity'),id=`selftest:${who.id}:${Math.floor(nowSeconds()/300)}`;
- const text=who.language==='ru'?'37 Barbershop · Тест уведомлений.\nБот может отправлять вам сообщения. Это проверка доставки, настоящая запись не создавалась.':
-  '37 Barbershop · Ծանուցումների փորձարկում։\nԲոտը կարող է ձեզ հաղորդագրություններ ուղարկել։ Սա առաքման ստուգում է․ իրական գրանցում չի ստեղծվել։';
+ const text='37 Barbershop · Ծանուցումների փորձարկում։\nԲոտը կարող է ձեզ հաղորդագրություններ ուղարկել։ Սա առաքման ստուգում է․ իրական գրանցում չի ստեղծվել։';
  await c.env.DB.batch([c.env.DB.prepare('INSERT OR IGNORE INTO outbox(id,chat_id,text) VALUES(?,?,?)').bind(id,who.id,text),
   c.env.DB.prepare("INSERT OR IGNORE INTO audit_log(id,actor,action,entity_id) VALUES(?,?,'notification.selftest',?)").bind('audit:'+id,who.id,id)]);
  deferDelivery(c,id);

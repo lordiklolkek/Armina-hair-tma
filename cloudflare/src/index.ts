@@ -1,3 +1,4 @@
+import { updateArmenianMenu } from './menu';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
@@ -129,5 +130,5 @@ app.all('/api/*',c=>c.json({error:'NOT_FOUND'},404));
 app.all('*',c=>c.env.ASSETS?c.env.ASSETS.fetch(c.req.raw):c.text('37 Barbershop · Demo',200));
 export default {fetch:app.fetch,scheduled:(_event:ScheduledController,env:Env,ctx:ExecutionContext)=>{
  ctx.waitUntil(runNotifications(env));
- ctx.waitUntil((async()=>{await runApprovedCutover(env);await checkBotConnection(env);})());
+ ctx.waitUntil((async()=>{await runApprovedCutover(env);await updateArmenianMenu(env);await checkBotConnection(env);})());
 }};
