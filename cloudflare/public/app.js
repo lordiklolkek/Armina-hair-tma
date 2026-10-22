@@ -198,7 +198,14 @@ async function renderExports(panel){
   exportObjectUrl=URL.createObjectURL(new Blob([JSON.stringify({...data,part},null,2)],{type:'application/json'}));
   const download=el('a',t('downloadExport'),'secondary link');download.href=exportObjectUrl;download.download=`37-${selected}-${new Date().toISOString().slice(0,10)}-part-${part}.json`;
   result.replaceChildren(el('p',`${t('exportPart')} ${part} · ${t('exportRecords')}: ${data.items.length}`,'notice'),download);
-  if(data.next_cursor!==null){const next=button(t('exportNext'),()=>prepare(data.next_cursor,data.through,part+1));next.disabled=true;download.addEventListener('click',()=>{next.disabled=false;});result.append(next,el('p',t('exportMore'),'muted'));}
+  let next;
+  const send=button(t('exportToChat'),async()=>{
+   await api('/owner/exports/'+selected+'?'+new URLSearchParams({after:String(after),through:String(data.through)}),'POST',{delivery:'telegram'});
+   if(ticket!==generation||!result.isConnected)return;
+   toast(t('exportSent'));if(next)next.disabled=false;
+  });
+  result.append(el('p',t('exportChatPrivacy'),'notice'),send);
+  if(data.next_cursor!==null){next=button(t('exportNext'),()=>prepare(data.next_cursor,data.through,part+1));next.disabled=true;download.addEventListener('click',()=>{next.disabled=false;});result.append(next,el('p',t('exportMore'),'muted'));}
   else result.append(el('p',t('exportComplete'),'muted'));
  }
  controls.append(button(t('prepareExport'),()=>prepare()));
