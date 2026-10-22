@@ -5,6 +5,16 @@ import { HTTPException } from 'hono/http-exception';
 import { renderNotice } from './messages';
 import { verifiedContactStatements, contactEnabled } from './contact';
 
+function updateNamespace(env:Env){
+ const key=env.TELEGRAM_UPDATE_NAMESPACE;
+ if(!key)return null;
+ if(!/^[1-9]\d{0,15}$/.test(key)||!Number.isSafeInteger(Number(key))||key!==(env.BOT_TOKEN||'').split(':')[0])throw new HTTPException(503,{message:'TELEGRAM_NAMESPACE_MISMATCH'});
+ return key;
+}
+export function webhookReplyId(env:Env,updateId:number){
+ const key=updateNamespace(env);return key?`update:${key}:${updateId}`:`update:${updateId}`;
+}
+
 export function launchKeyboard(env:Env,_language:string,barberId?:string){
  try{
   const url=new URL(env.APP_URL||'');
@@ -25,14 +35,17 @@ export async function telegramCall(env:Env,method:string,payload:unknown){
 }
 export async function processWebhook(env:Env,secret:string,update:Row){
  if(!env.WEBHOOK_SECRET||!equal(secret,env.WEBHOOK_SECRET))throw new HTTPException(403,{message:'FORBIDDEN'});
- if(!Number.isSafeInteger(update.update_id))throw new HTTPException(422,{message:'INVALID_UPDATE'});
+ if(!Number.isSafeInteger(update.update_id)||update.update_id<0)throw new HTTPException(422,{message:'INVALID_UPDATE'});
  const message=update.message,actor=message?.from?.id;
  // Demo cannot collect genuine phone contacts or enroll unknown accounts.
  if(env.APP_MODE!=='demo'||!Number.isSafeInteger(actor)||message?.chat?.type!=='private'||message.chat.id!==actor||!ids(env.DEMO_USER_IDS).includes(String(actor)))return;
- const existing=await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first();if(existing)return;
+ const namespace=updateNamespace(env);
+ const processed=()=>namespace?env.DB.prepare('SELECT update_id FROM telegram_bot_updates WHERE bot_id=? AND update_id=?').bind(namespace,update.update_id).first():env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first();
+ const receipt=()=>namespace?env.DB.prepare('INSERT INTO telegram_bot_updates(bot_id,update_id) VALUES(?,?)').bind(namespace,update.update_id):env.DB.prepare('INSERT INTO telegram_updates(update_id) VALUES(?)').bind(update.update_id);
+ if(await processed())return;
  const text=String(message.text||''),invite=/^\/start(?:@\w+)? join_([a-f0-9]{32})$/.exec(text);
  const preferred=/^\/start(?:@\w+)? barber_([A-Za-z0-9_-]{1,57})$/.exec(text);
- const base=()=>[env.DB.prepare('INSERT INTO telegram_updates(update_id) VALUES(?)').bind(update.update_id),env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(actor)];
+ const base=()=>[receipt(),env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(actor)];
  const statements:D1PreparedStatement[]=base();
  if(invite){
   const hash=await digest(invite[1]);
@@ -47,15 +60,15 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  const invalid=invite?'Հրավերն անվավեր է, արդեն օգտագործված է կամ մուտքը չեղարկված է։ Խնդրեք ադմինիստրատորին ստեղծել նորը։':'Համարը հաստատված չէ։ Բացեք հավելվածը, սկսեք համարի հաստատումը և Telegram-ի միջոցով ուղարկեք ձեր սեփական կոնտակտը։';
  const response=invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':contactEnabled(env)?invalid:'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։';
  const keyboard=launchKeyboard(env,'hy',preferred?.[1]);
- const reply=(body:string)=>env.DB.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,?,?,?)').bind(`update:${update.update_id}`,actor,body,keyboard?JSON.stringify(keyboard):null);
+ const reply=(body:string)=>env.DB.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,?,?,?)').bind(webhookReplyId(env,update.update_id),actor,body,keyboard?JSON.stringify(keyboard):null);
  statements.push(reply(response));
  try{await env.DB.batch(statements);}catch(error){
-  if(await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first())return;
+  if(await processed())return;
   // Invalid/replayed invitations and expired contact challenges are final
   // business outcomes. Acknowledge them instead of causing Telegram retries.
   if((invite||verification)&&String(error).includes('CHECK constraint failed: ok=1')){
    try{await env.DB.batch([...base(),reply(invalid)]);}catch(fallback){
-    if(!await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first())throw fallback;
+    if(!await processed())throw fallback;
    }
    return;
   }
@@ -64,7 +77,7 @@ export async function processWebhook(env:Env,secret:string,update:Row){
 }
 export async function runNotifications(env:Env,send=telegramCall,target?:string){
  if(env.APP_MODE!=='demo'||!env.BOT_TOKEN)return;
- if(target&&!/^(?:update:\d+|selftest:\d+:\d+|booking:[A-Za-z0-9_-]{1,80})$/.test(target))return;
+ if(target&&!/^(?:update:(?:\d+:)?\d+|selftest:\d+:\d+|booking:[A-Za-z0-9_-]{1,80})$/.test(target))return;
  if(!target){
  await env.DB.prepare("UPDATE outbox SET state='failed',last_error='ATTEMPTS_EXHAUSTED' WHERE attempts>=5 AND state IN('pending','sending') AND (lease_until IS NULL OR lease_until<?)").bind(nowSeconds()).run();
  // A bounded batch keeps each tick below the free invocation query limit.
@@ -138,5 +151,5 @@ export async function runNotifications(env:Env,send=telegramCall,target?:string)
   await env.DB.prepare('UPDATE outbox SET text=?,state=?,last_error=?,next_attempt_at=?,lease_until=NULL WHERE id=? AND lease_token=?')
    .bind(text,result.ok?'sent':failed?'failed':'pending',result.ok?null:`TELEGRAM_${result.code}`,nowSeconds()+Math.max(result.retry_after||0,Math.min(3600,30*2**Number(job.attempts))),id,lease).run();
  }
- if(!target)await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
+ if(!target)await env.DB.batch([...(env.TELEGRAM_UPDATE_NAMESPACE?[env.DB.prepare('DELETE FROM telegram_bot_updates WHERE processed_at<?').bind(nowSeconds()-7*86400)]:[]),env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
 }
