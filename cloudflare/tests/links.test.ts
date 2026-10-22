@@ -20,3 +20,9 @@ test('independent QR decoder reads exact general and personal URLs from generate
   const image=qrPixels(url);const decoded=jsQR(image.data,image.size,image.size);assert.equal(decoded?.data,url);
  }
 });
+test('bot start links work without a BotFather Main Mini App and fit Telegram payload limits',()=>{
+ const general=bookingLink('https://demo.test','',null,'Demo37Bot');assert.equal(general,'https://t.me/Demo37Bot?start=booking');
+ const personal=bookingLink('https://demo.test','','demo-a','Demo37Bot');assert.equal(personal,'https://t.me/Demo37Bot?start=barber_demo-a');
+ const pixels=qrPixels(personal);assert.equal(jsQR(pixels.data,pixels.size,pixels.size)?.data,personal);
+ const long='a'.repeat(80);assert.equal(bookingLink('https://demo.test','',long,'Demo37Bot'),'https://demo.test/?barber='+long);
+});

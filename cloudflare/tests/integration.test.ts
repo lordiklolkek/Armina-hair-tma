@@ -5,6 +5,8 @@ import { readFile, readdir } from 'node:fs/promises';
 import { Miniflare } from 'miniflare';
 import { app } from '../src/index';
 import { runNotifications, processWebhook } from '../src/telegram';
+import { checkBotConnection } from '../src/bot-status';
+import { forwardLegacyCallback } from '../src/legacy';
 import type { Env, Row } from '../src/types';
 
 let mf:Miniflare,env:Env,db:D1Database;
@@ -28,11 +30,106 @@ before(async()=>{
  for(const name of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await sqlFile(`migrations/${name}`);
 });
 beforeEach(async()=>{
- for(const table of ['outbox','notes','invitations','bookings','clients','schedule_overrides','working_hours','absences','barber_services','barbers','services','users','telegram_updates','rate_limits','audit_log'])await db.prepare(`DELETE FROM ${table}`).run();
+ for(const table of ['outbox','notes','invitations','bookings','clients','schedule_overrides','working_hours','absences','barber_services','barbers','services','contact_challenges','integration_status','users','telegram_updates','rate_limits','audit_log'])await db.prepare(`DELETE FROM ${table}`).run();
  await sqlFile('seeds/demo.sql');
 });
 after(async()=>{await mf?.dispose();});
 
+test('contact attestation requires a fresh signed challenge and own Telegram contact',async()=>{
+ const enabled={...env,CONTACT_VERIFICATION_ENABLED:'true'};
+ const options={CONTACT_VERIFICATION_ENABLED:'true'};
+ assert.equal((await request('/api/me/contact-challenge',101,'POST',{})).status,503);
+ assert.equal((await request('/api/me/contact-challenge',101,'POST',{phone:'+37400000000'},undefined,options)).status,422);
+ assert.equal((await request('/api/me/contact-challenge',101,'POST',{},undefined,options)).status,200);
+ const now=Math.floor(Date.now()/1000);
+ const update=(id:number,phone='+37400000000',user=101,extra:Row={})=>({update_id:id,message:{date:now,from:{id:101},chat:{id:101,type:'private'},contact:{user_id:user,phone_number:phone},...extra}});
+ await processWebhook(enabled,secret,update(800,'+37400000000',102));
+ await processWebhook(enabled,secret,update(801,'+37400000000',101,{forward_origin:{type:'user'}}));
+ await processWebhook(enabled,secret,update(802,'fake-number'));
+ assert.equal((await db.prepare('SELECT phone FROM users WHERE telegram_id=101').first<Row>())!.phone,null);
+ await processWebhook(enabled,secret,update(803));await processWebhook(enabled,secret,update(803));
+ const user=await db.prepare('SELECT phone,phone_verified_at FROM users WHERE telegram_id=101').first<Row>();
+ assert.equal(user!.phone,'+37400000000');assert(user!.phone_verified_at);
+ await processWebhook(enabled,secret,update(804,'+37411111111'));
+ assert.equal((await db.prepare('SELECT phone FROM users WHERE telegram_id=101').first<Row>())!.phone,'+37400000000');
+ const publicState=await (await request('/api/me/contact',101,'GET',undefined,undefined,options)).json() as Row;
+ assert.deepEqual(publicState,{enabled:true,verified:true});
+ assert(!(await db.prepare('SELECT text FROM outbox').all<Row>()).results.some(x=>x.text.includes('+374')));
+});
+test('old, unsolicited, group and expired contacts never verify a phone',async()=>{
+ const enabled={...env,CONTACT_VERIFICATION_ENABLED:'true'},options={CONTACT_VERIFICATION_ENABLED:'true'},now=Math.floor(Date.now()/1000);
+ const message={date:now,from:{id:101},chat:{id:101,type:'private'},contact:{user_id:101,phone_number:'37400000000'}};
+ await processWebhook(enabled,secret,{update_id:810,message});
+ assert.equal((await db.prepare('SELECT phone FROM users WHERE telegram_id=101').first<Row>())!.phone,null);
+ await request('/api/me/contact-challenge',101,'POST',{},undefined,options);
+ await processWebhook(enabled,secret,{update_id:811,message:{...message,date:now-1000}});
+ await processWebhook(enabled,secret,{update_id:812,message:{...message,chat:{id:101,type:'group'}}});
+ await processWebhook(enabled,secret,{update_id:813,message:{...message,chat:{id:102,type:'private'}}});
+ await db.prepare('UPDATE contact_challenges SET requested_at=?,expires_at=? WHERE telegram_id=101').bind(now-1000,now-1).run();
+ await processWebhook(enabled,secret,{update_id:814,message});
+ assert.equal((await db.prepare('SELECT phone FROM users WHERE telegram_id=101').first<Row>())!.phone,null);
+ assert.equal((await db.prepare('SELECT count(*) n FROM audit_log WHERE action=?').bind('contact.verified').first<Row>())!.n,0);
+});
+test('enabled phone gate blocks online booking and preserves verified contact with idempotency',async()=>{
+ const options={CONTACT_VERIFICATION_ENABLED:'true'},body={service_id:'cut',barber_id:'demo-a',starts_at:slot()};
+ const denied=await request('/api/bookings',101,'POST',body,'verified_booking',options);assert.equal(denied.status,409);assert.equal((await denied.json() as Row).error,'PHONE_REQUIRED');
+ assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,0);
+ await request('/api/me/contact-challenge',101,'POST',{},undefined,options);
+ await processWebhook({...env,...options},secret,{update_id:820,message:{date:Math.floor(Date.now()/1000),from:{id:101},chat:{id:101,type:'private'},contact:{user_id:101,phone_number:'37400000000'}}});
+ const a=await request('/api/bookings',101,'POST',body,'verified_booking',options);assert.equal(a.status,201);
+ const b=await request('/api/bookings',101,'POST',body,'verified_booking',options);assert.equal(b.status,201);assert.equal((await a.json() as Row).id,(await b.json() as Row).id);
+ assert.equal((await db.prepare('SELECT phone FROM clients WHERE telegram_id=101').first<Row>())!.phone,'+37400000000');
+ assert.equal((await request('/api/manual-bookings',1,'POST',{...body,starts_at:slot(11)},'manual_no_phone',options)).status,201);
+});
+test('authorized administrator can operate independently without a barber profile',async()=>{
+ const options={OWNER_IDS:'',ADMIN_IDS:'102'};
+ const identity=await (await request('/api/me',102,'GET',undefined,undefined,options)).json() as Row;
+ assert.equal(identity.owner,true);assert.equal(identity.barberId,null);
+ assert.equal((await request('/api/owner/barbers',102,'GET',undefined,undefined,options)).status,200);
+ assert.equal((await request('/api/owner/barbers',101,'GET',undefined,undefined,options)).status,403);
+ assert.equal((await request('/api/owner/barbers',102,'GET',undefined,undefined,{...options,ADMIN_IDS:''})).status,403);
+});
+test('barbers cannot read or alter another profile clients visits and private notes',async()=>{
+ for(const id of [201,202])await request('/api/me',id);
+ await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();await db.prepare("UPDATE barbers SET telegram_id=202 WHERE id='demo-b'").run();
+ const a=await (await book(101)).json() as Row,b=await (await book(102,slot(),'separate_barber','demo-b')).json() as Row;
+ assert.equal((await request(`/api/staff/demo-a/notes/${a.client_id}`,201,'PUT',{text:'A PRIVATE'})).status,200);
+ assert.equal((await request(`/api/staff/demo-b/notes/${b.client_id}`,202,'PUT',{text:'B PRIVATE'})).status,200);
+ for(const path of ['/api/staff/demo-b/clients','/api/staff/demo-b/schedule','/api/staff/demo-b/services'])assert.equal((await request(path,201)).status,403);
+ assert.equal((await request(`/api/staff/demo-b/notes/${b.client_id}`,201,'PUT',{text:'FORGED'})).status,403);
+ assert.equal((await request(`/api/staff/demo-a/notes/${b.client_id}`,201,'PUT',{text:'FORGED'})).status,404);
+ assert.equal((await request('/api/bookings/'+b.id,201,'PATCH',{version:1,status:'cancelled'})).status,403);
+ const own=await (await request('/api/staff/demo-a/clients',201)).json() as Row[];assert.equal(own.length,1);assert.equal(own[0].note,'A PRIVATE');assert(!JSON.stringify(own).includes('B PRIVATE'));
+ const visits=await (await request('/api/bookings?scope=staff',201)).json() as Row[];assert(visits.every(x=>x.barber_id==='demo-a'));
+ const admin=await (await request('/api/staff/demo-b/clients',1)).json() as Row[];assert.equal(admin[0].note,'B PRIVATE');
+});
+test('bot launch preserves personal barber selection and rejects unsafe persisted keyboards',async()=>{
+ const configured={...env,APP_URL:'https://demo.test/'};
+ await processWebhook(configured,secret,{update_id:830,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start barber_demo-a'}});
+ const calls:Row[]=[];await runNotifications(configured,async(_e,_m,p)=>{calls.push(p as Row);return {ok:true,code:200,retry_after:0};});
+ assert.equal(calls.length,1);assert.equal(calls[0].reply_markup.inline_keyboard[0][0].web_app.url,'https://demo.test/?barber=demo-a');
+ await db.prepare("INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES('unsafe-button',101,'test',?)").bind(JSON.stringify({inline_keyboard:[[{text:'Open',web_app:{url:'https://evil.test/'}}]]})).run();
+ await runNotifications(configured,async(_e,_m,p)=>{calls.push(p as Row);return {ok:true,code:200,retry_after:0};});assert.equal(calls.length,1);
+ assert.equal((await db.prepare("SELECT last_error FROM outbox WHERE id='unsafe-button'").first<Row>())!.last_error,'INVALID_PAYLOAD');
+});
+test('expired and concurrently claimed invitations are acknowledged without rebinding or retries',async()=>{
+ const invite=await (await request('/api/owner/barbers/demo-a/invitation',1,'POST',{})).json() as Row;
+ const update=(id:number,actor:number)=>({update_id:id,message:{from:{id:actor},chat:{id:actor,type:'private'},text:'/start '+invite.url.split('start=')[1]}});
+ await Promise.all([processWebhook(env,secret,update(840,201)),processWebhook(env,secret,update(841,202))]);
+ assert.equal((await db.prepare("SELECT count(*) n FROM barbers WHERE telegram_id IN(201,202)").first<Row>())!.n,1);
+ assert.equal((await db.prepare('SELECT count(*) n FROM telegram_updates').first<Row>())!.n,2);
+ const other=await (await request('/api/owner/barbers/demo-b/invitation',1,'POST',{})).json() as Row;await db.prepare("UPDATE invitations SET expires_at=0 WHERE barber_id='demo-b'").run();
+ await processWebhook(env,secret,{update_id:842,message:{from:{id:103},chat:{id:103,type:'private'},text:'/start '+other.url.split('start=')[1]}});
+ assert.equal((await db.prepare("SELECT telegram_id FROM barbers WHERE id='demo-b'").first<Row>())!.telegram_id,null);
+});
+
+test('bot connection monitoring uses only read methods and exposes no credentials',async()=>{
+ const methods:string[]=[];
+ const status=await checkBotConnection({...env,APP_URL:'https://demo.test/'},async(_env,method)=>{methods.push(method);return {ok:true,result:method==='getMe'?{username:'TestOnly_Bot',id:123}:{url:'https://demo.test/telegram/webhook',pending_update_count:2,last_error_message:'PRIVATE ERROR MUST NOT BE EXPOSED'}};});
+ assert.deepEqual(methods,['getMe','getWebhookInfo']);assert.equal(status!.webhook_matches,true);
+ assert.equal((await request('/api/owner/telegram-status',101)).status,403);
+ const exposed=await (await request('/api/owner/telegram-status',1)).json() as Row;assert.equal(exposed.pending_updates,2);assert(!JSON.stringify(exposed).includes('PRIVATE ERROR'));assert(!JSON.stringify(exposed).includes(token));
+});
 test('health, public demo catalog and private signed API',async()=>{
  assert.equal((await request('/health',null)).status,200);
  assert.equal((await (await request('/api/config',null)).json() as Row).real_bookings,false);
@@ -42,6 +139,17 @@ test('health, public demo catalog and private signed API',async()=>{
  assert.equal((await request('/api/me',999)).status,403);
  assert.equal((await request('/api/me',101,'GET',undefined,undefined,{APP_MODE:'production'})).status,503);
  assert.equal((await request('/api/owner/barbers',101)).status,403);
+});
+test('legacy callback forwarding is explicit bounded and never silently discards old actions',async()=>{
+ const update={update_id:850,callback_query:{id:'test',from:{id:101},data:'confirm_1'}};
+ const response=await app.request('https://demo.test/telegram/webhook',{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Bot-Api-Secret-Token':secret},body:JSON.stringify(update)},env);
+ assert.equal(response.status,503);assert.equal((await response.json() as Row).error,'LEGACY_CALLBACK_NOT_READY');
+ let calls=0;
+ const configured={...env,LEGACY_CALLBACK_FORWARDING_ENABLED:'true',LEGACY_WEBHOOK_SECRET:'TEST_LEGACY_SECRET_ONLY'};
+ await forwardLegacyCallback(configured,update,async(url,init)=>{calls++;assert.equal(url,'https://armina-hair-tma-demo.onrender.com/telegram/webhook');assert.equal((init!.headers as Row)['X-Telegram-Bot-Api-Secret-Token'],'TEST_LEGACY_SECRET_ONLY');assert.deepEqual(JSON.parse(init!.body as string),update);return new Response('{"ok":true}');});
+ assert.equal(calls,1);
+ await assert.rejects(()=>forwardLegacyCallback(configured,update,async()=>new Response('',{status:503})),/LEGACY_CALLBACK_UNAVAILABLE/);
+ assert.equal((await request('/telegram/webhook',null,'POST',update)).status,403);
 });
 test('invalid, expired, future and duplicate initData cannot authenticate',async()=>{
  for(const raw of [signed(101)+'&user=forged',signed(101,4000),signed(101,-90),signed(101).replace('query_id=test','query_id=forged')]){
@@ -265,7 +373,8 @@ test('one-time invitations bind only an allowed private Telegram account',async(
  const update={update_id:500,message:{from:{id:201},chat:{id:201,type:'private'},text:`/start ${code}`}};
  await processWebhook(env,secret,update);await processWebhook(env,secret,update);
  assert.equal((await request('/api/me',201).then(r=>r.json()) as Row).barberId,'demo-a');
- await assert.rejects(()=>processWebhook(env,secret,{...update,update_id:501,message:{...update.message,from:{id:202},chat:{id:202,type:'private'}}}));
+ await processWebhook(env,secret,{...update,update_id:501,message:{...update.message,from:{id:202},chat:{id:202,type:'private'}}});
+ assert((await db.prepare("SELECT text FROM outbox WHERE id='update:501'").first<Row>())!.text.includes('Հրավերն'));
  assert.equal((await db.prepare("SELECT telegram_id FROM barbers WHERE id='demo-a'").first<Row>())!.telegram_id,201);
 });
 test('demo webhook rejects secrets and does not collect genuine contacts',async()=>{
