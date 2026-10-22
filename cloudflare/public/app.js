@@ -28,7 +28,7 @@ const heading=(name,copy)=>{root.append(el('h2',name));if(copy)root.append(el('p
 function chrome(){
  $('hero').hidden=state.view!=='services';
  document.documentElement.lang=language;$('language').textContent=language==='hy'?'RU':'ՀԱՅ';
- $('demo').textContent=t('demo');$('hero-label').textContent=t('heroLabel');$('hero-title').textContent=t('heroTitle');$('hero-copy').textContent=t('heroCopy');$('address').textContent=state.config.address||'Շահումյան 33, Կապան, Հայաստան';$('city').textContent=language==='hy'?'ԿԱՊԱՆ · ՀԱՅԱՍՏԱՆ':'КАПАН · АРМЕНИЯ';
+ $('demo').textContent=t(state.config.contact_verification?'demoWithContact':'demo');$('hero-label').textContent=t('heroLabel');$('hero-title').textContent=t('heroTitle');$('hero-copy').textContent=t('heroCopy');$('address').textContent=state.config.address||'Շահումյան 33, Կապան, Հայաստան';$('city').textContent=language==='hy'?'ԿԱՊԱՆ · ՀԱՅԱՍՏԱՆ':'КАПАН · АРМЕНИЯ';
  $('footer').replaceChildren(el('span','37 BARBERSHOP'),el('span',t('timezone')));
  if(state.config.logo_url){const image=el('img');image.src=state.config.logo_url;image.alt=state.config.name;image.style.cssText='max-width:52px;max-height:52px';$('logo').replaceChildren(image);}
  const nav=$('nav');nav.replaceChildren();
@@ -79,7 +79,7 @@ function renderBooking(){
   root.append(button('‹ '+t('back'),()=>{state.step=3;return render();},'plain'));heading(t('confirm'));
   const card=el('div',null,'card'),master=[...state.catalog.barbers,...(state.transferBarbers||[])].find(b=>b.id===state.barber);card.append(el('h3',title(state.service)),el('p',master?.name||t('any')),el('p',`${dateText(state.time)} · ${timeText(state.time)}`),el('h3',price(state.service)));root.append(card);
   if(state.service.price_min!==state.service.price_max)root.append(el('p',t('rangeNote'),'notice'));
-  root.append(el('p',t('privacy'),'muted'));
+  root.append(el('p',t(state.config.contact_verification?'privacyWithContact':'privacy'),'muted'));
   const confirmation=button(t('confirm')+' ↗',async()=>{
    state.key??=crypto.randomUUID();
    if(state.editing)await api('/bookings/'+state.editing.id,'PATCH',{version:state.editing.version,starts_at:state.time,...(state.barber!==state.editing.barber_id?{barber_id:state.barber}:{})});
