@@ -52,7 +52,7 @@ export async function createBooking(env:Env,identity:Identity,input:z.infer<type
  if(manual&&!identity.owner&&!identity.barberId)throw new HTTPException(403,{message:'FORBIDDEN'});
  if(manual&&(!input.barber_id||!identity.owner&&input.barber_id!==identity.barberId))throw new HTTPException(403,{message:'FORBIDDEN'});
  if(!manual&&env.CONTACT_VERIFICATION_ENABLED==='true'&&!await env.DB.prepare('SELECT telegram_id FROM users WHERE telegram_id=? AND phone IS NOT NULL AND phone_verified_at IS NOT NULL').bind(identity.id).first())throw new HTTPException(409,{message:'PHONE_REQUIRED'});
- // Visits keep invented demo names; only an explicitly verified Telegram contact may supply a phone.
+ // Only verified Telegram identity/contact supplies client details in live mode.
  const clientId=manual?crypto.randomUUID():`tg:${identity.id}`;
  const candidates=(await env.DB.prepare(`SELECT b.id,COALESCE(bs.duration,s.duration) duration FROM barbers b
  JOIN barber_services bs ON bs.barber_id=b.id JOIN services s ON s.id=bs.service_id
@@ -63,7 +63,8 @@ export async function createBooking(env:Env,identity:Identity,input:z.infer<type
   try{
    await env.DB.batch([
     ...(!manual&&env.CONTACT_VERIFICATION_ENABLED==='true'?guard(env.DB,'EXISTS(SELECT 1 FROM users WHERE telegram_id=? AND phone IS NOT NULL AND phone_verified_at IS NOT NULL)',identity.id):[]),
-    env.DB.prepare('INSERT OR IGNORE INTO clients(id,telegram_id,name,phone) VALUES(?,?,?,NULL)').bind(clientId,manual?null:identity.id,'Դեմո հաճախորդ / Демо-клиент'),
+    env.DB.prepare('INSERT OR IGNORE INTO clients(id,telegram_id,name,phone) VALUES(?,?,?,NULL)').bind(clientId,manual?null:identity.id,env.APP_MODE==='live'?(manual?'Հաճախորդ':identity.displayName||'Հաճախորդ'):'Դեմո հաճախորդ / Демо-клиент'),
+    ...(!manual&&env.APP_MODE==='live'?[env.DB.prepare("UPDATE clients SET name=? WHERE id=? AND name='Դեմո հաճախորդ / Демо-клиент'").bind(identity.displayName||'Հաճախորդ',clientId)]:[]),
     ...(!manual&&env.CONTACT_VERIFICATION_ENABLED==='true'?[env.DB.prepare('UPDATE clients SET phone=(SELECT phone FROM users WHERE telegram_id=?) WHERE id=?').bind(identity.id,clientId)]:[]),
     env.DB.prepare(`INSERT INTO bookings(id,client_id,barber_id,service_id,title_hy,title_ru,price_min,price_max,starts_at,ends_at,status,source,created_by,idempotency_key,request_hash)
      SELECT ?,?,?,id,title_hy,title_ru,price_min,price_max,?,?,'confirmed',?,?,?,? FROM services WHERE id=? AND active=1`)

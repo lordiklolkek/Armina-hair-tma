@@ -37,8 +37,8 @@ app.onError((err,c)=>{
  console.error(JSON.stringify({event:'api_error',kind:err.name}));
  return c.json({error:'SERVICE_UNAVAILABLE'},503);
 });
-app.get('/health',async c=>{try{await c.env.DB.prepare('SELECT 1').first();return c.json({ok:true,mode:'demo'});}catch{return c.json({ok:false},503);}});
-app.get('/api/config',async c=>c.json({...await c.env.DB.prepare('SELECT * FROM settings WHERE id=1').first(),mode:'demo',timezone:'Asia/Yerevan',currency:'AMD',real_bookings:false,
+app.get('/health',async c=>{try{await c.env.DB.prepare('SELECT 1').first();return c.json({ok:true,mode:c.env.APP_MODE==='live'?'live':'demo'});}catch{return c.json({ok:false},503);}});
+app.get('/api/config',async c=>c.json({...await c.env.DB.prepare('SELECT * FROM settings WHERE id=1').first(),mode:c.env.APP_MODE==='live'?'live':'demo',timezone:'Asia/Yerevan',currency:'AMD',real_bookings:c.env.APP_MODE==='live',
  bot_replacement_active:c.env.ACTIVE_BOT==='next',contact_verification:contactEnabled(c.env),
  telegram_bot_username:/^[A-Za-z0-9_]{5,32}$/.test(c.env.BOT_USERNAME||'')&&c.env.WEBHOOK_SECRET&&c.env.TELEGRAM_LINKS_ENABLED==='true'?c.env.BOT_USERNAME:'',
  telegram_app_url:/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}(?:\/[A-Za-z0-9_]{1,64})?$/.test(c.env.MINI_APP_URL||'')?c.env.MINI_APP_URL:''}));
@@ -57,9 +57,9 @@ app.post('/telegram/webhook',async c=>{
  if(c.env.ACTIVE_BOT==='next'&&c.env.PREVIOUS_WEBHOOK_SECRET&&equal(incoming,c.env.PREVIOUS_WEBHOOK_SECRET)){
   const update=await c.req.json(),message=update.message,actor=message?.from?.id;
   const start=/^\/start(?:@\w+)? (barber_[A-Za-z0-9_-]{1,57}|join_[a-f0-9]{32}|booking)$/.exec(String(message?.text||''))?.[1]||'booking';
-  if(c.env.APP_MODE==='demo'&&Number.isSafeInteger(actor)&&message?.chat?.type==='private'&&message.chat.id===actor&&ids(c.env.DEMO_USER_IDS).includes(String(actor)))return c.json({method:'sendMessage',chat_id:actor,text:'37 Barbershop-ը տեղափոխվել է նոր բոտ։ Շարունակելու համար բացեք @'+c.env.BOT_USERNAME+'։',reply_markup:{inline_keyboard:[[{text:'Գրանցվել',url:`https://t.me/${c.env.BOT_USERNAME}?start=${start}`}]]}});
+  if(['demo','live'].includes(c.env.APP_MODE)&&Number.isSafeInteger(actor)&&actor>0&&message?.chat?.type==='private'&&message.chat.id===actor&&(c.env.APP_MODE==='live'||ids(c.env.DEMO_USER_IDS).includes(String(actor))))return c.json({method:'sendMessage',chat_id:actor,text:'37 Barbershop-ը տեղափոխվել է նոր բոտ։ Շարունակելու համար բացեք @'+c.env.BOT_USERNAME+'։',reply_markup:{inline_keyboard:[[{text:'Գրանցվել',url:`https://t.me/${c.env.BOT_USERNAME}?start=${start}`}]]}});
   const callback=update.callback_query;
-  if(typeof callback?.id==='string'&&callback.id.length<=256&&ids(c.env.DEMO_USER_IDS).includes(String(callback.from?.id)))return c.json({method:'answerCallbackQuery',callback_query_id:callback.id,text:'Բացեք նոր բոտը՝ @'+c.env.BOT_USERNAME,show_alert:true});
+  if(typeof callback?.id==='string'&&callback.id.length<=256&&Number.isSafeInteger(callback.from?.id)&&callback.from.id>0&&(c.env.APP_MODE==='live'||ids(c.env.DEMO_USER_IDS).includes(String(callback.from?.id))))return c.json({method:'answerCallbackQuery',callback_query_id:callback.id,text:'Բացեք նոր բոտը՝ @'+c.env.BOT_USERNAME,show_alert:true});
   return c.json({ok:true});
  }
  // Reject before reading JSON. Webhook registration is deliberately not automatic.
@@ -73,7 +73,7 @@ app.post('/telegram/webhook',async c=>{
  return c.json({ok:true});
 });
 app.use('/api/*',authenticate);
-app.get('/api/me',c=>c.json({...c.get('identity'),mode:'demo'}));
+app.get('/api/me',c=>c.json({...c.get('identity'),mode:c.env.APP_MODE==='live'?'live':'demo'}));
 app.put('/api/me/language',async c=>{const d=z.object({language:z.enum(['hy','ru'])}).strict().parse(await c.req.json());await c.env.DB.prepare('UPDATE users SET language=? WHERE telegram_id=?').bind(d.language,c.get('identity').id).run();return c.json({ok:true});});
 app.get('/api/slots',async c=>{
  const day=dayInput.parse(c.req.query('date'));const service=z.string().min(1).max(80).parse(c.req.query('service_id'));

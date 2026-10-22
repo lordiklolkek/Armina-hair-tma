@@ -6,6 +6,6 @@ export interface Env {
  LEGACY_WEBHOOK_SECRET?: string; LEGACY_CALLBACK_FORWARDING_ENABLED?: string;
  OPS_ALERTS_ENABLED?: string; TELEGRAM_MENU_LABEL_REQUEST?: string; TELEGRAM_CUTOVER_REQUEST?: string; RENDER_GUARD_COMMIT?: string; LEGACY_CALLBACKS_RETIRED?: string;
 }
-export interface Identity { id: number; owner: boolean; barberId: string | null; language: 'hy'|'ru' }
+export interface Identity { id: number; displayName?: string; owner: boolean; barberId: string | null; language: 'hy'|'ru' }
 export type AppEnv = { Bindings: Env; Variables: { identity: Identity } };
 export type Row = Record<string, any>;

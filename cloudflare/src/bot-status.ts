@@ -10,7 +10,7 @@ async function readTelegram(env:Env,method:'getMe'|'getWebhookInfo'|'getChatMenu
 }
 // Read-only Bot API calls. Never register a webhook or change the bot menu.
 export async function checkBotConnection(env:Env,read=readTelegram){
- if(!env.BOT_TOKEN||env.APP_MODE!=='demo')return;
+ if(!env.BOT_TOKEN||!['demo','live'].includes(env.APP_MODE))return;
  const bot=await read(env,'getMe'),webhook=await read(env,'getWebhookInfo'),menu=await read(env,'getChatMenuButton');
  let origin='',matches=false,menuOrigin='',menuPath='',menuMatches=false,menuHasQuery=false;
  try{const url=new URL(menu.result?.web_app?.url||'');menuOrigin=url.origin;menuPath=url.pathname.slice(0,100);menuHasQuery=Boolean(url.search||url.hash||url.username||url.password);menuMatches=url.toString()===new URL(env.APP_URL||'').toString();}catch{}

@@ -37,8 +37,8 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  if(!env.WEBHOOK_SECRET||!equal(secret,env.WEBHOOK_SECRET))throw new HTTPException(403,{message:'FORBIDDEN'});
  if(!Number.isSafeInteger(update.update_id)||update.update_id<0)throw new HTTPException(422,{message:'INVALID_UPDATE'});
  const message=update.message,actor=message?.from?.id;
- // Demo cannot collect genuine phone contacts or enroll unknown accounts.
- if(env.APP_MODE!=='demo'||!Number.isSafeInteger(actor)||message?.chat?.type!=='private'||message.chat.id!==actor||!ids(env.DEMO_USER_IDS).includes(String(actor)))return;
+ // Private demos restrict accounts; live mode still requires a verified private Telegram update.
+ if(!['demo','live'].includes(env.APP_MODE)||!Number.isSafeInteger(actor)||actor<=0||message?.chat?.type!=='private'||message.chat.id!==actor||(env.APP_MODE==='demo'&&!ids(env.DEMO_USER_IDS).includes(String(actor))))return;
  const namespace=updateNamespace(env);
  const processed=()=>namespace?env.DB.prepare('SELECT update_id FROM telegram_bot_updates WHERE bot_id=? AND update_id=?').bind(namespace,update.update_id).first():env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first();
  const receipt=()=>namespace?env.DB.prepare('INSERT INTO telegram_bot_updates(bot_id,update_id) VALUES(?,?)').bind(namespace,update.update_id):env.DB.prepare('INSERT INTO telegram_updates(update_id) VALUES(?)').bind(update.update_id);
@@ -58,7 +58,7 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  const verification=message.contact?verifiedContactStatements(env,update,actor):null;
  if(verification)statements.push(...verification);
  const invalid=invite?'Հրավերն անվավեր է, արդեն օգտագործված է կամ մուտքը չեղարկված է։ Խնդրեք ադմինիստրատորին ստեղծել նորը։':'Համարը հաստատված չէ։ Բացեք հավելվածը, սկսեք համարի հաստատումը և Telegram-ի միջոցով ուղարկեք ձեր սեփական կոնտակտը։';
- const response=invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':contactEnabled(env)?invalid:'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։';
+ const response=env.APP_MODE==='live'?(invite?'Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':invalid:'Բարի գալուստ 37 Barbershop։ Ընտրեք ծառայությունն ու վարպետին և ամրագրեք ձեզ հարմար ժամը։') :invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':contactEnabled(env)?invalid:'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։';
  const keyboard=launchKeyboard(env,'hy',preferred?.[1]);
  const reply=(body:string)=>env.DB.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,?,?,?)').bind(webhookReplyId(env,update.update_id),actor,body,keyboard?JSON.stringify(keyboard):null);
  statements.push(reply(response));
@@ -76,7 +76,7 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  }
 }
 export async function runNotifications(env:Env,send=telegramCall,target?:string){
- if(env.APP_MODE!=='demo'||!env.BOT_TOKEN)return;
+ if(!['demo','live'].includes(env.APP_MODE)||!env.BOT_TOKEN)return;
  if(target&&!/^(?:update:(?:\d+:)?\d+|selftest:\d+:\d+|booking:[A-Za-z0-9_-]{1,80})$/.test(target))return;
  if(!target){
  await env.DB.prepare("UPDATE outbox SET state='failed',last_error='ATTEMPTS_EXHAUSTED' WHERE attempts>=5 AND state IN('pending','sending') AND (lease_until IS NULL OR lease_until<?)").bind(nowSeconds()).run();
@@ -98,7 +98,7 @@ export async function runNotifications(env:Env,send=telegramCall,target?:string)
   const job=await env.DB.prepare(`UPDATE outbox SET state='sending',lease_token=?,lease_until=?,attempts=attempts+1
    WHERE id=? AND attempts<5 AND ((state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?)) RETURNING *`).bind(lease,nowSeconds()+120,id,nowSeconds(),nowSeconds()).first<Row>();
   if(!job)continue;
-  if(!ids(env.DEMO_USER_IDS).includes(String(job.chat_id))){await env.DB.prepare("UPDATE outbox SET state='failed',last_error='NOT_DEMO_ACCOUNT' WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
+  if(env.APP_MODE==='demo'&&!ids(env.DEMO_USER_IDS).includes(String(job.chat_id))){await env.DB.prepare("UPDATE outbox SET state='failed',last_error='NOT_DEMO_ACCOUNT' WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
   if(job.booking_id&&!job.event_json&&id.startsWith(job.booking_id+':')){
    const version=id.slice(String(job.booking_id).length+1).split(':')[0];
    if(/^[1-9]\d*$/.test(version)){
@@ -126,7 +126,7 @@ export async function runNotifications(env:Env,send=telegramCall,target?:string)
      payload.client_phone=contact?.phone||null;
     }else delete payload.client_phone;
     // Chat language is always Armenian; the Mini App language remains independent.
-    text=renderNotice(payload,'hy');
+    text=renderNotice(payload,'hy',env.APP_MODE!=='live');
    }
    catch{await env.DB.prepare("UPDATE outbox SET state='failed',last_error='INVALID_PAYLOAD',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
   }

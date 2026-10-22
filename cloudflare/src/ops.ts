@@ -5,8 +5,8 @@ import { nowSeconds } from './booking';
 // Bounded monitoring on the existing cron. Alerts contain no customer data.
 // Telegram cannot report its own complete outage until delivery recovers.
 export async function queueOperationalAlert(env:Env,connection?:Row){
- if(env.APP_MODE!=='demo'||env.OPS_ALERTS_ENABLED!=='true'||!env.BOT_TOKEN)return;
- const recipient=[...ids(env.ADMIN_IDS),...ids(env.OWNER_IDS)].find(id=>ids(env.DEMO_USER_IDS).includes(id));
+ if(!['demo','live'].includes(env.APP_MODE)||env.OPS_ALERTS_ENABLED!=='true'||!env.BOT_TOKEN)return;
+ const recipient=[...ids(env.ADMIN_IDS),...ids(env.OWNER_IDS)].find(id=>env.APP_MODE==='live'||ids(env.DEMO_USER_IDS).includes(id));
  if(!recipient)return;
  const now=nowSeconds();
  const queue=await env.DB.prepare(`SELECT sum(failed) failed,sum(delayed) delayed FROM (
