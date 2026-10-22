@@ -5,6 +5,12 @@ WEBHOOK_SECRET=
 # Numeric Telegram IDs, comma separated. Both lists must include the demo owner.
 OWNER_IDS=
 DEMO_USER_IDS=
+# An authorized administrator can operate the salon without a barber profile.
+# Server configuration only: users cannot grant themselves access.
+ADMIN_IDS=
+APP_URL=https://barbershop-37-demo.barbershop-37.workers.dev
+CONTACT_VERIFICATION_ENABLED=false
+TELEGRAM_LINKS_ENABLED=false
 # Optional configured direct Mini App entry, e.g. https://t.me/YourBot/demo37.
 # Leave empty until verified: QR codes will explicitly offer browser preview links.
 MINI_APP_URL=
