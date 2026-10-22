@@ -25,4 +25,5 @@ jobs:
       - run: pnpm test
       - run: node --check public/app.js
       - run: node --check public/i18n.js
+      - run: node --check public/ui.js
       - run: pnpm build
