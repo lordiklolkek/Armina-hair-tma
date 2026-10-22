@@ -41,6 +41,25 @@ beforeEach(async()=>{
 });
 after(async()=>{await mf?.dispose();});
 
+test('new barber stays draft until services hours and publication are configured',async()=>{
+ const created=await request('/api/owner/barbers',1,'POST',{name:'New TEST barber'});assert.equal(created.status,201);
+ const {id}=await created.json() as Row;
+ const profile=async()=>((await (await request('/api/owner/barbers',1)).json()) as Row[]).find(b=>b.id===id)!;
+ const visible=async()=>((await (await request('/api/catalog',null)).json()) as Row).barbers.some((b:Row)=>b.id===id);
+ let barber=await profile();assert.equal(barber.online_enabled,0);assert.equal(barber.service_count,0);assert.equal(barber.working_hours_count,0);assert.equal(await visible(),false);
+ assert.equal((await request('/api/owner/barbers',101)).status,403);
+ assert.equal((await request('/api/owner/barbers/'+id,1,'PATCH',{version:barber.version,online_enabled:true})).status,409);
+ assert.equal((await request('/api/staff/'+id+'/services/cut',1,'PUT',{duration:35,enabled:true})).status,200);
+ barber=await profile();assert.equal(barber.service_count,1);assert.equal(barber.working_hours_count,0);assert.equal(await visible(),false);
+ assert.equal((await request('/api/owner/barbers/'+id,1,'PATCH',{version:barber.version,online_enabled:true})).status,409);
+ assert.equal((await request('/api/staff/'+id+'/schedule',1,'PUT',{hours:[{weekday:0,start_minute:600,end_minute:1020}]})).status,200);
+ barber=await profile();assert.equal(barber.working_hours_count,1);assert.equal(await visible(),false);
+ assert.equal((await request('/api/owner/barbers/'+id,1,'PATCH',{version:barber.version,online_enabled:true})).status,200);
+ assert.equal(await visible(),true);const catalog=await (await request('/api/catalog',null)).json() as Row;
+ assert.equal(catalog.links.find((link:Row)=>link.barber_id===id).duration,35);
+ await db.prepare("UPDATE services SET active=0 WHERE id='cut'").run();assert.equal((await profile()).service_count,0);
+});
+
 test('business exports require an administrator and reject operational tables and malformed cursors',async()=>{
  assert.equal((await request('/api/owner/exports/clients',null)).status,401);
  await db.prepare("INSERT INTO users(telegram_id) VALUES(201)").run();
