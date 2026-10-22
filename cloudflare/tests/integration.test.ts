@@ -113,6 +113,33 @@ test('bot launch preserves personal barber selection and rejects unsafe persiste
  await runNotifications(configured,async(_e,_m,p)=>{calls.push(p as Row);return {ok:true,code:200,retry_after:0};});assert.equal(calls.length,1);
  assert.equal((await db.prepare("SELECT last_error FROM outbox WHERE id='unsafe-button'").first<Row>())!.last_error,'INVALID_PAYLOAD');
 });
+test('immediate webhook reply claims only its own job and stays single under a cron race',async()=>{
+ const configured={...env,APP_URL:'https://demo.test/'};
+ await db.prepare("INSERT INTO outbox(id,chat_id,text) VALUES('unrelated-notice',102,'unrelated')").run();
+ await processWebhook(configured,secret,{update_id:835,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
+ const sent:Row[]=[];
+ const send=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
+ await runNotifications(configured,send,'update:835');
+ assert.equal(sent.length,1);assert.equal(sent[0].chat_id,101);assert(sent[0].reply_markup);
+ assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='unrelated-notice'").first<Row>())!.state,'pending');
+ await processWebhook(configured,secret,{update_id:837,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
+ await Promise.all([runNotifications(configured,send,'update:837'),runNotifications(configured,send)]);
+ assert.equal(sent.filter(x=>x.chat_id===101).length,2);
+ assert.equal(sent.filter(x=>x.chat_id===102).length,1);
+});
+test('immediate reply failure retains backoff and cron retries without losing the update',async()=>{
+ await processWebhook(env,secret,{update_id:836,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
+ await runNotifications(env,async()=>({ok:false,code:429,retry_after:120}),'update:836');
+ const job=await db.prepare("SELECT state,attempts,last_error,next_attempt_at FROM outbox WHERE id='update:836'").first<Row>();
+ assert.equal(job!.state,'pending');assert.equal(job!.attempts,1);assert.equal(job!.last_error,'TELEGRAM_429');assert(job!.next_attempt_at>Math.floor(Date.now()/1000));
+ let sent=0;const send=async()=>{sent++;return {ok:true,code:200,retry_after:0};};
+ await runNotifications(env,send,'update:836');assert.equal(sent,0);
+ await db.prepare("UPDATE outbox SET next_attempt_at=0 WHERE id='update:836'").run();
+ await runNotifications(env,send);assert.equal(sent,1);
+ await processWebhook(env,secret,{update_id:836,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
+ await runNotifications(env,send,'update:836');assert.equal(sent,1);
+ assert.equal((await db.prepare('SELECT count(*) n FROM telegram_updates WHERE update_id=836').first<Row>())!.n,1);
+});
 test('expired and concurrently claimed invitations are acknowledged without rebinding or retries',async()=>{
  const invite=await (await request('/api/owner/barbers/demo-a/invitation',1,'POST',{})).json() as Row;
  const update=(id:number,actor:number)=>({update_id:id,message:{from:{id:actor},chat:{id:actor,type:'private'},text:'/start '+invite.url.split('start=')[1]}});
