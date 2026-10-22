@@ -1,3 +1,4 @@
+import { runApprovedReplacement } from '../src/bot-replacement';
 import { queueOperationalAlert } from '../src/ops';
 import { updateArmenianMenu } from '../src/menu';
 import { after, before, beforeEach, test } from 'node:test';
@@ -19,10 +20,10 @@ import type { Env, Row } from '../src/types';
 
 let mf:Miniflare,env:Env,db:D1Database;
 const token='123456:TEST_ONLY_TOKEN',secret='TEST_ONLY_WEBHOOK_SECRET_123456789012345';
-function signed(id:number,age=0){
+function signed(id:number,age=0,botToken=token){
  const fields={auth_date:String(Math.floor(Date.now()/1000)-age),query_id:`test-${id}`,user:JSON.stringify({id,first_name:'TEST'})};
  const check=Object.entries(fields).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}=${v}`).join('\n');
- const key=createHmac('sha256','WebAppData').update(token).digest();
+ const key=createHmac('sha256','WebAppData').update(botToken).digest();
  return new URLSearchParams({...fields,hash:createHmac('sha256',key).update(check).digest('hex')}).toString();
 }
 async function request(path:string,id:number|null=101,method='GET',data?:unknown,key?:string,overrides:Partial<Env>={}){
@@ -38,7 +39,7 @@ before(async()=>{
  for(const name of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await sqlFile(`migrations/${name}`);
 });
 beforeEach(async()=>{
- for(const table of ['outbox','notes','invitations','bookings','clients','schedule_overrides','working_hours','absences','barber_services','barbers','services','contact_challenges','integration_status','users','telegram_updates','rate_limits','audit_log'])await db.prepare(`DELETE FROM ${table}`).run();
+ for(const table of ['outbox','notes','invitations','bookings','clients','schedule_overrides','working_hours','absences','barber_services','barbers','services','contact_challenges','integration_status','users','telegram_bot_updates','telegram_updates','rate_limits','audit_log'])await db.prepare(`DELETE FROM ${table}`).run();
  await sqlFile('seeds/demo.sql');
 });
 after(async()=>{await mf?.dispose();});
@@ -214,6 +215,77 @@ test('queued legacy launch labels become Armenian without accepting extra button
  }
  await runNotifications(configured,send);assert.equal(sent.length,3);
  assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE id LIKE 'unsafe-label-%' AND last_error='INVALID_PAYLOAD'").first<Row>())!.n,2);
+});
+
+test('replacement configuration is inert without approval and configures only the candidate once',async()=>{
+ const configured={...env,APP_URL:'https://demo.test/',NEXT_BOT_USERNAME:'Barber37Bot',NEXT_BOT_TOKEN:'654321:TEST_NEXT',NEXT_WEBHOOK_SECRET:'NEW_TEST_SECRET_12345678901234567890'};
+ const methods:string[]=[];let hooked=false;
+ const call=async(e:Env,m:string,p:Row)=>{assert.equal(e.NEXT_BOT_TOKEN,configured.NEXT_BOT_TOKEN);assert.equal(e.BOT_TOKEN,token);methods.push(m);
+  if(m==='getMe')return {id:654321,is_bot:true,username:'Barber37Bot'};
+  if(m==='getWebhookInfo')return {url:hooked?'https://demo.test/telegram/webhook':'',pending_update_count:0};
+  if(m==='getChatMenuButton')return {type:'web_app',text:'Գրանցվել',web_app:{url:'https://demo.test/'}};
+  if(m==='setWebhook'){assert.equal(p.secret_token,configured.NEXT_WEBHOOK_SECRET);assert.equal(p.drop_pending_updates,false);hooked=true;}
+  return {};
+ };
+ await runApprovedReplacement(configured,call);assert.equal(methods.length,0);
+ const approved={...configured,BOT_REPLACEMENT_REQUEST:'11111111-1111-4111-8111-111111111111'};
+ await Promise.all([runApprovedReplacement(approved,call),runApprovedReplacement(approved,call)]);
+ assert.deepEqual(methods,['getMe','getWebhookInfo','setChatMenuButton','getChatMenuButton','setWebhook','getWebhookInfo']);
+ await runApprovedReplacement(approved,call);assert.equal(methods.length,6);
+ assert.equal(JSON.parse((await db.prepare("SELECT payload FROM integration_status WHERE id LIKE 'replacement-cutover:%'").first<Row>())!.payload).state,'complete');
+});
+
+test('replacement configuration refuses an active queue before writing bot settings',async()=>{
+ await db.prepare("INSERT INTO outbox(id,chat_id,text) VALUES('pending',101,'TEST')").run();let writes=0;
+ const configured={...env,APP_URL:'https://demo.test/',NEXT_BOT_USERNAME:'Barber37Bot',NEXT_BOT_TOKEN:'654321:TEST_NEXT',NEXT_WEBHOOK_SECRET:'NEW_TEST_SECRET_12345678901234567890',BOT_REPLACEMENT_REQUEST:'22222222-2222-4222-8222-222222222222'};
+ await runApprovedReplacement(configured,async(_e,m)=>{if(m==='getMe')return {id:654321,is_bot:true,username:'Barber37Bot'};if(m==='getWebhookInfo')return {url:''};writes++;return {};});
+ assert.equal(writes,0);assert.equal(JSON.parse((await db.prepare("SELECT payload FROM integration_status WHERE id LIKE 'replacement-cutover:%'").first<Row>())!.payload).step,'outbox_busy');
+});
+
+test('uncertain replacement writes stop and never automatically replay the request',async()=>{
+ let writes=0;const configured={...env,APP_URL:'https://demo.test/',NEXT_BOT_USERNAME:'Barber37Bot',NEXT_BOT_TOKEN:'654321:TEST_NEXT',NEXT_WEBHOOK_SECRET:'NEW_TEST_SECRET_12345678901234567890',BOT_REPLACEMENT_REQUEST:'33333333-3333-4333-8333-333333333333'};
+ const call=async(_e:Env,m:string)=>{if(m==='getMe')return {id:654321,is_bot:true,username:'Barber37Bot'};if(m==='getWebhookInfo')return {url:''};writes++;throw Error('TEST_TIMEOUT');};
+ await runApprovedReplacement(configured,call);await runApprovedReplacement(configured,call);assert.equal(writes,1);
+ assert.equal(JSON.parse((await db.prepare("SELECT payload FROM integration_status WHERE id LIKE 'replacement-cutover:%'").first<Row>())!.payload).step,'menu');
+});
+
+test('after bot activation old webhook redirects without writing users bookings or receipts',async()=>{
+ const overrides={ACTIVE_BOT:'next',TELEGRAM_LINKS_ENABLED:'true',NEXT_BOT_TOKEN:'654321:TEST_NEXT',NEXT_BOT_USERNAME:'Barber37Bot',NEXT_WEBHOOK_SECRET:'NEW_TEST_SECRET_12345678901234567890'};
+ const response=await app.request('https://demo.test/telegram/webhook',{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Bot-Api-Secret-Token':secret},body:JSON.stringify({update_id:777,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}})},{...env,...overrides});
+ const body=await response.json() as Row;assert.equal(response.status,200);assert.equal(body.method,'sendMessage');assert.equal(body.reply_markup.inline_keyboard[0][0].url,'https://t.me/Barber37Bot?start=booking');
+ for(const table of ['users','bookings','telegram_bot_updates','telegram_updates','outbox'])assert.equal((await db.prepare(`SELECT count(*) n FROM ${table}`).first<Row>())!.n,0);
+ assert.equal((await request('/api/me',1,'GET',undefined,undefined,overrides)).status,401);
+ const config=await (await request('/api/config',null,'GET',undefined,undefined,overrides)).json() as Row;
+ assert.equal(config.telegram_bot_username,'Barber37Bot');assert.equal(config.real_bookings,false);
+ await db.prepare('INSERT INTO users(telegram_id) VALUES(1)').run();await db.prepare("UPDATE barbers SET telegram_id=1 WHERE id='demo-a'").run();
+ const account=await app.request('https://demo.test/api/me',{headers:{'X-Telegram-Init-Data':signed(1,0,overrides.NEXT_BOT_TOKEN)}},{...env,...overrides});
+ assert.equal(account.status,200);const identity=await account.json() as Row;assert.equal(identity.owner,true);assert.equal(identity.barberId,'demo-a');
+
+ for(const payload of ['barber_demo-a','join_'+'a'.repeat(32),'https://evil.test']){
+  const forwarded=await app.request('https://demo.test/telegram/webhook',{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Bot-Api-Secret-Token':secret},body:JSON.stringify({update_id:778,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start '+payload}})},{...env,...overrides});
+  const expected=payload.startsWith('https:')?'booking':payload;
+  assert.equal(((await forwarded.json()) as Row).reply_markup.inline_keyboard[0][0].url,'https://t.me/Barber37Bot?start='+expected);
+ }
+
+});
+
+test('replacement bot namespaces accept colliding update ids without losing or duplicating replies',async()=>{
+ const old={...env,APP_URL:'https://demo.test/'},next={...old,BOT_TOKEN:'654321:TEST_NEXT',TELEGRAM_UPDATE_NAMESPACE:'654321'};
+ const update={update_id:777,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}};
+ await processWebhook(old,secret,update);
+ await Promise.all([processWebhook(next,secret,update),processWebhook(next,secret,update)]);
+ const ids=(await db.prepare("SELECT id FROM outbox WHERE id LIKE 'update:%' ORDER BY id").all<Row>()).results.map(r=>r.id);
+ assert.deepEqual(ids,['update:654321:777','update:777']);
+ assert.equal((await db.prepare('SELECT count(*) n FROM telegram_bot_updates').first<Row>())!.n,1);
+ assert.equal((await db.prepare('SELECT count(*) n FROM telegram_updates').first<Row>())!.n,1);
+ const sent:Row[]=[];await runNotifications(next,async(_e,_m,p)=>{sent.push(p as Row);return {ok:true,code:200,retry_after:0};},'update:654321:777');
+ assert.equal(sent.length,1);assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='update:777'").first<Row>())!.state,'pending');
+});
+
+test('replacement bot rejects a namespace that does not belong to its active token',async()=>{
+ const wrong={...env,TELEGRAM_UPDATE_NAMESPACE:'654321'};
+ await assert.rejects(()=>processWebhook(wrong,secret,{update_id:778,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}}),/TELEGRAM_NAMESPACE_MISMATCH/);
+ assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first<Row>())!.n,0);
 });
 
 test('immediate webhook reply claims only its own job and stays single under a cron race',async()=>{
