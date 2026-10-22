@@ -53,6 +53,26 @@ async def test_configures_expected_bot(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_render_restart_preserves_external_webhook_by_default(monkeypatch):
+    calls = []
+    async def capture_configuration():
+        calls.append("configure")
+    monkeypatch.setattr(main, "configure_telegram", capture_configuration)
+    monkeypatch.delenv("TELEGRAM_AUTO_CONFIGURE", raising=False)
+    async with main.lifespan(main.app):
+        pass
+    assert calls == []
+    monkeypatch.setenv("TELEGRAM_AUTO_CONFIGURE", "false")
+    async with main.lifespan(main.app):
+        pass
+    assert calls == []
+    monkeypatch.setenv("TELEGRAM_AUTO_CONFIGURE", "true")
+    async with main.lifespan(main.app):
+        pass
+    assert calls == ["configure"]
+
+
+@pytest.mark.asyncio
 async def test_wrong_bot_cannot_be_reconfigured(monkeypatch):
     calls = []
     async def fake_api(method, payload):
