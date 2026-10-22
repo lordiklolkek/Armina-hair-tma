@@ -13,6 +13,8 @@ const timeText=v=>new Intl.DateTimeFormat(language==='hy'?'hy-AM':'ru-RU',{timeZ
 const dateText=v=>new Intl.DateTimeFormat(language==='hy'?'hy-AM':'ru-RU',{timeZone:'Asia/Yerevan',day:'numeric',month:'long',weekday:'short'}).format(v*1000);
 const today=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Yerevan',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`;};
 let toastTimer;
+let exportObjectUrl;
+function clearExportDownload(){if(exportObjectUrl)URL.revokeObjectURL(exportObjectUrl);exportObjectUrl=null;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 async function api(path,method='GET',body,key){
  const response=await fetch('/api'+path,{method,headers:{...(tg?.initData?{'X-Telegram-Init-Data':tg.initData}:{}),...(body?{'Content-Type':'application/json'}:{}),...(key?{'Idempotency-Key':key}:{})},body:body?JSON.stringify(body):undefined});
@@ -30,6 +32,7 @@ function chrome(){
  document.documentElement.lang=language;$('language').textContent=language==='hy'?'RU':'ՀԱՅ';
  $('demo').textContent=t(state.config.contact_verification?'demoWithContact':'demo');$('hero-label').textContent=t('heroLabel');$('hero-title').textContent=t('heroTitle');$('hero-copy').textContent=t('heroCopy');$('address').textContent=state.config.address||'Շահումյան 33, Կապան, Հայաստան';$('city').textContent=language==='hy'?'ԿԱՊԱՆ · ՀԱՅԱՍՏԱՆ':'КАПАН · АРМЕНИЯ';
  $('footer').replaceChildren(el('span','37 BARBERSHOP'),el('span',t('timezone')));
+ const privacy=el('details',null,'privacy');privacy.append(el('summary',t('privacyTitle')),...['privacyProcessing','privacyAccess','privacyRequests'].map(key=>el('p',t(key))));$('footer').append(privacy);
  if(state.config.logo_url){const image=el('img');image.src=state.config.logo_url;image.alt=state.config.name;image.style.cssText='max-width:52px;max-height:52px';$('logo').replaceChildren(image);}
  const nav=$('nav');nav.replaceChildren();
  for(const view of ['services','my',...(state.me?.barberId?['staff']:[]),...(state.me?.owner?['owner']:[])]){
@@ -38,7 +41,7 @@ function chrome(){
 }
 async function refreshCatalog(){state.catalog=await api('/catalog');}
 function newFlow(){Object.assign(state,{view:'services',step:1,service:null,barber:null,date:null,time:null,key:null,editing:null,manual:false});return render();}
-async function render(){chrome();root.replaceChildren();state.request++;try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
+async function render(){clearExportDownload();chrome();root.replaceChildren();state.request++;try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
 function renderBooking(){
  if(state.step===1){
   const top=el('div',null,'section-head'),labels=el('div');labels.append(el('h2',t('choose')),el('p',t('chooseCopy'),'muted'));top.append(labels,el('span',String(state.catalog.services.length).padStart(2,'0'),'count'));root.append(top);
@@ -106,8 +109,14 @@ async function renderBookings(scope,target=root,barberId=null){
  const records=await api('/bookings?scope='+scope),bookings=barberId?records.filter(b=>b.barber_id===barberId):records;if(!bookings.length)target.append(el('p',t('empty'),'muted'));
  for(const booking of bookings)target.append(bookingCard(booking,scope));
 }
+function clientPhone(value){
+ const line=el('p',value?`${t('clientPhone')}: `:t('noClientPhone'),'muted');
+ if(value){const contact=el('a',value,'link');if(/^\+?[1-9]\d{6,14}$/.test(value))contact.href='tel:'+value;line.append(contact);}
+ return line;
+}
 function bookingCard(booking,scope,refresh=render){
   const card=el('article',null,'card');card.append(el('span',t(booking.status),'status'),el('h3',title(booking)),el('p',`${dateText(booking.starts_at)} · ${timeText(booking.starts_at)}`),el('p',booking.barber_name,'muted'),el('p',price(booking),'muted'));if(scope!=='mine')card.append(el('p',booking.client_name));
+  if(scope!=='mine')card.append(clientPhone(booking.phone));
   const actions=el('div',null,'actions');
   if(['confirmed','pending'].includes(booking.status)){
    actions.append(button(t('cancel'),async()=>{if(!window.confirm(t('deleteConfirm')))return;await api('/bookings/'+booking.id,'PATCH',{version:booking.version,status:'cancelled'});await refresh();}));
@@ -123,8 +132,8 @@ function bookingCard(booking,scope,refresh=render){
 }
 async function renderOwner(){
  heading(t('owner'));const subnav=el('div',null,'actions');root.append(subnav);const panel=el('div');root.append(panel);
- async function show(action){panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}}
- subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('calendar'),()=>show(()=>renderCalendar(panel))),button(t('clients'),()=>show(()=>ownerClients(panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))),button(t('notifications'),()=>show(()=>ownerNotifications(panel))));
+ async function show(action){clearExportDownload();panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}}
+ subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('calendar'),()=>show(()=>renderCalendar(panel))),button(t('clients'),()=>show(()=>ownerClients(panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))),button(t('notifications'),()=>show(()=>ownerNotifications(panel))),button(t('exportData'),()=>show(()=>renderExports(panel))));
  await show(()=>ownerBarbers(panel));
 }
 async function ownerBarbers(panel){
@@ -174,6 +183,26 @@ async function ownerSettings(panel){
  input(f,t('name'),'name',config.name);input(f,t('address'),'address',config.address);input(f,t('logo'),'logo_url',config.logo_url,'url');input(f,t('advance'),'advance_days',config.advance_days,'number');input(f,t('notice'),'notice_minutes',config.notice_minutes,'number');
  formSave(f,async d=>{await api('/owner/settings','PUT',{name:d.get('name'),address:d.get('address'),logo_url:d.get('logo_url')||null,advance_days:Number(d.get('advance_days')),notice_minutes:Number(d.get('notice_minutes'))});state.config=await api('/config');chrome();});panel.append(f);
  const notifications=el('section');panel.append(notifications);await ownerNotifications(notifications);
+}
+async function renderExports(panel){
+ panel.append(el('h2',t('exportData')),el('p',t('exportPrivacy'),'notice'),el('p',t('exportHint'),'muted'));
+ const controls=el('div',null,'card'),result=el('div');panel.append(controls,result);
+ const names=['clients','bookings','notes','barbers','services','barber_services','working_hours','absences','schedule_overrides','users','settings'];
+ const dataset=select(controls,t('exportCollection'),'dataset',names.map(name=>[name,t('export_'+name)]),'clients');
+ let generation=0;
+ async function prepare(after=0,through,part=1){
+  const selected=dataset.value,ticket=++generation;clearExportDownload();result.replaceChildren(el('p',t('loading'),'muted'));
+  const parameters=new URLSearchParams({after:String(after)});if(through!==undefined)parameters.set('through',String(through));
+  const data=await api('/owner/exports/'+selected+'?'+parameters);
+  if(ticket!==generation||!result.isConnected)return;
+  exportObjectUrl=URL.createObjectURL(new Blob([JSON.stringify({...data,part},null,2)],{type:'application/json'}));
+  const download=el('a',t('downloadExport'),'secondary link');download.href=exportObjectUrl;download.download=`37-${selected}-${new Date().toISOString().slice(0,10)}-part-${part}.json`;
+  result.replaceChildren(el('p',`${t('exportPart')} ${part} · ${t('exportRecords')}: ${data.items.length}`,'notice'),download);
+  if(data.next_cursor!==null){const next=button(t('exportNext'),()=>prepare(data.next_cursor,data.through,part+1));next.disabled=true;download.addEventListener('click',()=>{next.disabled=false;});result.append(next,el('p',t('exportMore'),'muted'));}
+  else result.append(el('p',t('exportComplete'),'muted'));
+ }
+ controls.append(button(t('prepareExport'),()=>prepare()));
+ dataset.addEventListener('change',()=>{generation++;clearExportDownload();result.replaceChildren();});
 }
 async function ownerNotifications(panel){
  panel.replaceChildren(el('h2',t('notifications')),el('p',t('notificationsHint'),'muted'));
@@ -228,7 +257,7 @@ async function ownerClients(panel){
   for(const client of page.items){
    const card=el('article',null,'card');list.append(card);
    function draw(){
-    card.replaceChildren(el('h3',client.name),el('p',`${t('completed')}: ${client.completed_count} · ${t('no_show')}: ${client.no_show_count}`,'muted'));
+    card.replaceChildren(el('h3',client.name),clientPhone(client.phone),el('p',`${t('completed')}: ${client.completed_count} · ${t('no_show')}: ${client.no_show_count}`,'muted'));
     if(!client.has_telegram){card.append(el('p',t('manualClient'),'muted'));return;}
     const action=button(client.blocked?t('unblockClient'):t('blockClient'),()=>{
      const confirmation=el('div',null,'notice');confirmation.append(el('p',client.blocked?t('unblockConfirm'):t('blockConfirm')));
@@ -287,7 +316,7 @@ async function staffServices(panel,id){
 }
 async function staffClients(panel,id){
  const clients=await api('/staff/'+id+'/clients');if(!clients.length)panel.append(el('p',t('empty'),'muted'));
- for(const client of clients){const f=el('form',null,'card');f.append(el('h3',client.name));input(f,t('note'),'note',client.note||'','textarea');formSave(f,async d=>{await api(`/staff/${id}/notes/${client.id}`,'PUT',{text:d.get('note')});});panel.append(f);}
+ for(const client of clients){const f=el('form',null,'card');f.append(el('h3',client.name),clientPhone(client.phone));input(f,t('note'),'note',client.note||'','textarea');formSave(f,async d=>{await api(`/staff/${id}/notes/${client.id}`,'PUT',{text:d.get('note')});});panel.append(f);}
 }
 function renderLinks(panel,barberId=null){
  panel.append(el('h3',t('linksQr')),el('p',state.config.telegram_app_url||state.config.telegram_bot_username?t('telegramLinksHint'):t('browserLinksHint'),'notice'));
