@@ -260,6 +260,12 @@ async def health():
     return {"ok": True}
 
 
+@app.get("/migration-status", include_in_schema=False)
+async def migration_status():
+    return {"guard": "37-migration-v1", "auto_configuration": telegram_auto_configure_enabled(),
+            "source_commit": os.getenv("RENDER_GIT_COMMIT", "")}
+
+
 @app.get("/api/config")
 async def public_config():
     return {"salon_name": SALON_NAME, "salon_address": SALON_ADDRESS, "timezone": "Asia/Yerevan"}
