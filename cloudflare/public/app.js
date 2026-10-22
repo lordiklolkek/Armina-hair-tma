@@ -45,7 +45,7 @@ function chrome(){
  }
 }
 async function refreshCatalog(){state.catalog=await api('/catalog');}
-function newFlow(){Object.assign(state,{view:'services',step:1,service:null,barber:null,date:null,time:null,key:null,editing:null,manual:false});return render();}
+async function newFlow(){Object.assign(state,{view:'services',step:1,service:null,barber:null,date:null,time:null,key:null,editing:null,manual:false});await refreshCatalog();return render();}
 async function render(){clearExportDownload();chrome();root.replaceChildren();window.scrollTo(0,0);root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
 function renderBooking(){
  if(state.step<5){const progress=el('ol',null,'booking-progress');progress.setAttribute('aria-label',t('bookingProgress'));for(const [i,key]of ['stepService','stepBarber','date','confirmStep'].entries()){const item=el('li',null,i+1===state.step?'current':i+1<state.step?'complete':'');item.append(el('span',String(i+1).padStart(2,'0'),'step-number'),el('span',t(key)));if(i+1===state.step)item.setAttribute('aria-current','step');progress.append(item);}root.append(progress);}
@@ -155,16 +155,29 @@ async function renderOwner(){
 }
 async function ownerBarbers(panel){
  const barbers=await api('/owner/barbers');
- const add=el('form',null,'card');input(add,t('name'),'name').required=true;formSave(add,async f=>{await api('/owner/barbers','POST',{name:f.get('name')});panel.replaceChildren();await ownerBarbers(panel);});panel.append(el('h2',t('addBarber')),add);
+ const add=el('form',null,'card');input(add,t('name'),'name').required=true;formSave(add,async f=>{const created=await api('/owner/barbers','POST',{name:f.get('name')});await refreshCatalog();await barberSetup(panel,created.id);});panel.append(el('h2',t('addBarber')),el('p',t('barberCreateHint'),'muted'),add);
  for(const barber of barbers){
   const card=el('article',null,'card');card.append(el('h3',barber.name),el('p',`${barber.archived?t('archived'):barber.active?t('active'):t('unavailable')} · ${t('scheduledVisits')}: ${barber.future_count}`,'muted'));
-  const actions=el('div',null,'actions');actions.append(button(t('edit'),()=>{panel.replaceChildren();return editBarber(panel,barber);}));
+  const visible=barber.active&&!barber.archived&&barber.online_enabled&&barber.service_count>0;card.append(el('span',t(visible?'barberVisible':'barberHidden'),'status'));if(!visible&&!barber.archived)card.append(el('p',[!barber.service_count?t('setupServicesMissing'):null,!barber.working_hours_count?t('setupHoursMissing'):null,!barber.online_enabled?t('setupOnlineMissing'):null,!barber.active?t('setupInactive'):null].filter(Boolean).join(' · '),'muted'));
+  const actions=el('div',null,'actions');if(!barber.archived)actions.append(button(t('setupBooking'),()=>barberSetup(panel,barber.id)));actions.append(button(t('edit'),()=>{panel.replaceChildren();return editBarber(panel,barber);}));
   actions.append(button(t('staff'),async()=>{state.staffId=barber.id;root.replaceChildren();await renderStaff(barber.id);}));
   actions.append(button(barber.archived?t('restore'):t('archive'),async()=>{
    if(!barber.archived)return retireBarber(panel,barber,'archive');const data={version:barber.version,archived:false};
    await api('/owner/barbers/'+barber.id,'PATCH',data);await refreshCatalog();panel.replaceChildren();await ownerBarbers(panel);
   }));card.append(actions);panel.append(card);
  }
+}
+async function barberSetup(panel,id){
+ const barber=(await api('/owner/barbers')).find(b=>b.id===id);if(!barber)throw Error(t('error'));if(!panel.isConnected)return;
+ panel.replaceChildren(button('‹ '+t('selectBarber'),async()=>{panel.replaceChildren();await ownerBarbers(panel);},'plain'),el('h2',barber.name),el('p',t('barberSetupHint'),'notice'));
+ async function section(renderSection){panel.replaceChildren(button('‹ '+t('setupBooking'),()=>barberSetup(panel,id),'plain'),el('h2',barber.name));const body=el('section');panel.append(body);await renderSection(body,id);}
+ const services=el('section',null,'card');services.append(el('h3','01 · '+t('prices')),el('p',barber.service_count?`${t('setupServicesReady')}: ${barber.service_count}`:t('setupServicesMissing'),'muted'),button(t('setupChooseServices'),()=>section(staffServices)));panel.append(services);
+ const hours=el('section',null,'card');hours.append(el('h3','02 · '+t('schedule')),el('p',barber.working_hours_count?t('setupHoursReady'):t('setupHoursMissing'),'muted'),button(t('setupChooseHours'),()=>section(staffSchedule)));panel.append(hours);
+ const online=el('section',null,'card');online.append(el('h3','03 · '+t('online')),el('p',t(barber.online_enabled&&barber.active&&!barber.archived?'barberVisible':'barberHidden'),'muted'));
+ if(!barber.active||barber.archived)online.append(el('p',t('setupInactive'),'notice'));
+ else if(!barber.online_enabled){const enable=button(t('setupEnable'),async()=>{const current=(await api('/owner/barbers')).find(b=>b.id===id);await api('/owner/barbers/'+id,'PATCH',{version:current.version,online_enabled:true});await refreshCatalog();await barberSetup(panel,id);},'primary');enable.disabled=!barber.service_count||!barber.working_hours_count;online.append(enable);if(enable.disabled)online.append(el('p',t('setupCompleteFirst'),'muted'));}
+ else online.append(el('p',t('setupLiveHint'),'muted'));
+ panel.append(online);
 }
 async function editBarber(panel,barber){
  const f=el('form',null,'card');input(f,t('name'),'name',barber.name).required=true;input(f,t('description'),'description',barber.description,'textarea');input(f,t('photo'),'photo_url',barber.photo_url,'url');input(f,t('active'),'active',barber.active,'checkbox');input(f,t('online'),'online',barber.online_enabled,'checkbox');
