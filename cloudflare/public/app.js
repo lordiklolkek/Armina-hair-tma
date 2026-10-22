@@ -124,7 +124,7 @@ function bookingCard(booking,scope,refresh=render){
 async function renderOwner(){
  heading(t('owner'));const subnav=el('div',null,'actions');root.append(subnav);const panel=el('div');root.append(panel);
  async function show(action){panel.replaceChildren();try{await action();}catch(e){panel.append(el('p',e.message,'notice'));}}
- subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('calendar'),()=>show(()=>renderCalendar(panel))),button(t('clients'),()=>show(()=>ownerClients(panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))));
+ subnav.append(button(t('selectBarber'),()=>show(()=>ownerBarbers(panel))),button(t('prices'),()=>show(()=>ownerServices(panel))),button(t('calendar'),()=>show(()=>renderCalendar(panel))),button(t('clients'),()=>show(()=>ownerClients(panel))),button(t('linksQr'),()=>show(()=>renderLinks(panel))),button(t('settings'),()=>show(()=>ownerSettings(panel))),button(t('notifications'),()=>show(()=>ownerNotifications(panel))));
  await show(()=>ownerBarbers(panel));
 }
 async function ownerBarbers(panel){
