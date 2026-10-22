@@ -2,7 +2,7 @@
 
 Новая изолированная версия TypeScript/Hono/Workers/D1 находится в [cloudflare/](cloudflare/README.md). Состояние разработки и точка продолжения: [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md). Руководства и сценарий закрытого показа: [cloudflare/OPERATIONS.md](cloudflare/OPERATIONS.md).
 
-Неофициальная демонстрация с вымышленными данными размещена отдельно: https://barbershop-37-demo.barbershop-37.workers.dev. HTTPS-каталог и облачная D1 проверены; настоящий Telegram ещё не подключён, реальные записи отключены. Исходная версия FastAPI/Render ниже сохранена для восстановления и перехода.
+Неофициальная демонстрация с вымышленными данными размещена отдельно: https://barbershop-37-demo.barbershop-37.workers.dev. HTTPS-каталог и облачная D1 проверены; вход владельца в Telegram подтверждён, но webhook ещё на Render; реальные записи отключены. Исходная версия FastAPI/Render ниже сохранена для восстановления и перехода.
 
 # Armina Hair — исходная версия Telegram Mini App
 
@@ -40,7 +40,7 @@ API-документация: `http://127.0.0.1:8000/docs`, проверка р�
 5. Создайте `WEBHOOK_SECRET` длиной не менее 32 символов (например, `python -c "import secrets; print(secrets.token_urlsafe(32))"`). Используйте только буквы, цифры, `_` и `-`.
 6. После получения публичного HTTPS-адреса добавьте его в `PUBLIC_BASE_URL` без завершающего `/`. На Render адрес автоматически берётся из `RENDER_EXTERNAL_URL`, если `PUBLIC_BASE_URL` пуст: повторный деплой ради адреса не требуется. Используйте только HTTPS-адрес без пути, параметров и пароля.
 
-При старте FastAPI автоматически вызывает Telegram **setWebhook** с `secret_token`, **setChatMenuButton** и **setMyCommands**, привязывая приложение к кнопке меню бота. Команда `/id` в личном чате выдаёт пользователю его числовой Telegram ID. Когда клиент напишет боту `/start`, он также получит кнопку «Открыть запись». Для красивой кнопки запуска на странице бота откройте @BotFather → Bot Settings → Configure Mini App (Main Mini App), укажите тот же HTTPS URL. После этого доступна прямая ссылка `https://t.me/ArminaHair_Bot?startapp`.
+Автоматическая настройка Telegram при старте FastAPI теперь выключена по умолчанию (`TELEGRAM_AUTO_CONFIGURE=false`). Это сохраняет действующий webhook при перезапуске старого сервиса после миграции. Только явное значение `true` включает прежние **setWebhook**, **setChatMenuButton** и **setMyCommands**. На старом Render оставляйте `false`. Это изменение должно быть отдельно применено к фактически работающему Render: наличие файла в ветке разработки не меняет его текущий процесс. Команды `/id`, `/start` и существующие обработчики сохранены.
 
 Telegram требует публичный **HTTPS**. Для локальной проверки внутри Telegram можно поднять HTTPS-туннель (например, Cloudflare Tunnel или ngrok) на порт 8000, указать его URL в `PUBLIC_BASE_URL` и перезапустить сервер. Адрес туннеля должен оставаться действующим.
 

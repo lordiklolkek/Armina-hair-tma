@@ -221,12 +221,21 @@ async def configure_telegram() -> None:
         LOG.info("Telegram webhook and Mini App menu configured")
 
 
+def telegram_auto_configure_enabled() -> bool:
+    # Migration safety: an old Render restart must never reclaim the active bot.
+    # Registration is a deliberate operator action, disabled by default.
+    return os.getenv("TELEGRAM_AUTO_CONFIGURE", "false").strip().lower() == "true"
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
         validate_telegram_config()
         await initialize_database()
-        await configure_telegram()
+        if telegram_auto_configure_enabled():
+            await configure_telegram()
+        else:
+            LOG.info("Automatic Telegram configuration disabled; existing webhook preserved")
         yield
     finally:
         await engine.dispose()

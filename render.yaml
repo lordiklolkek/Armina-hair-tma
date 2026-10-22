@@ -8,6 +8,8 @@ services:
     startCommand: python -m uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     envVars:
+      - key: TELEGRAM_AUTO_CONFIGURE
+        value: "false"
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_CHAT_ID
