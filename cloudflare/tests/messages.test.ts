@@ -14,3 +14,18 @@ test('barber notifications and status names are localized; range disclaimer is e
  assert(text.includes('Клиент: Тестовый клиент'));assert(text.includes('Статус: Неявка'));assert(text.includes('Итоговую цену согласуйте с мастером.'));assert(!text.includes('no_show'));
  assert.throws(()=>renderNotice({...sample,kind:'unknown'}));
 });
+
+test('technical booking identifiers are absent from every notification type',()=>{
+ for(const language of ['ru','hy'])for(const kind of ['created','moved','cancelled','updated','transferred_away','reminder24h','reminder2h']){
+  const text=renderNotice({...sample,kind},language);assert(!text.includes(sample.id));assert(!text.includes(sample.id.slice(0,8)));
+ }
+});
+test('verified contact is visible only in the assigned barber copy',()=>{
+ const phone='+37400000000';
+ for(const kind of ['created','moved','cancelled','updated']){
+  assert(renderNotice({...sample,kind,audience:'barber',client_phone:phone},'ru').includes('Телефон: '+phone));
+  assert(!renderNotice({...sample,kind,client_phone:phone},'ru').includes(phone));
+ }
+ assert(!renderNotice({...sample,kind:'transferred_away',audience:'barber',client_phone:phone},'ru').includes(phone));
+ assert(renderNotice({...sample,audience:'barber',client_phone:phone},'hy').includes('Հեռախոս: '+phone));
+});

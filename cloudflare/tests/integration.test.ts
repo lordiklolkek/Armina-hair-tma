@@ -4,6 +4,11 @@ import { createHmac } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { Miniflare } from 'miniflare';
 import { app } from '../src/index';
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { authenticate } from '../src/auth';
+import { createExports, sendExportDocument } from '../src/exports';
+import type { AppEnv } from '../src/types';
 import { runNotifications, processWebhook } from '../src/telegram';
 import { checkBotConnection } from '../src/bot-status';
 import { forwardLegacyCallback } from '../src/legacy';
@@ -35,6 +40,65 @@ beforeEach(async()=>{
  await sqlFile('seeds/demo.sql');
 });
 after(async()=>{await mf?.dispose();});
+
+test('business exports require an administrator and reject operational tables and malformed cursors',async()=>{
+ assert.equal((await request('/api/owner/exports/clients',null)).status,401);
+ await db.prepare("INSERT INTO users(telegram_id) VALUES(201)").run();
+ await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ for(const id of [101,201])assert.equal((await request('/api/owner/exports/clients',id)).status,403);
+ for(const name of ['outbox','invitations','contact_challenges','integration_status','constructor','users;DELETE'])assert.equal((await request('/api/owner/exports/'+encodeURIComponent(name),1)).status,404);
+ for(const value of ['?after=-1','?after=1.5','?through=2&after=3','?after=0&after=1','?table=outbox','?through=9007199254740992'])assert.equal((await request('/api/owner/exports/users'+value,1)).status,422);
+});
+test('business export pages have a fixed boundary and never silently truncate a collection',async()=>{
+ await db.prepare('WITH RECURSIVE seq(n) AS (SELECT 10000 UNION ALL SELECT n+1 FROM seq WHERE n<10260) INSERT INTO users(telegram_id) SELECT n FROM seq').run();
+ const firstResponse=await request('/api/owner/exports/users',1),first=await firstResponse.json() as Row;
+ assert(firstResponse.headers.get('cache-control')!.includes('no-store'));assert(firstResponse.headers.get('content-disposition')!.includes('attachment'));
+ assert.equal(first.format,'37-business-export');assert.equal(first.schema_version,1);assert.equal(first.items.length,250);assert(first.next_cursor);
+ await db.prepare('INSERT INTO users(telegram_id) VALUES(99999)').run();
+ const second=await (await request(`/api/owner/exports/users?after=${first.next_cursor}&through=${first.through}`,1)).json() as Row;
+ assert.equal(second.next_cursor,null);assert.equal(second.items.length,12);
+ const exported=[...first.items,...second.items];assert.equal(new Set(exported.map(x=>x.telegram_id)).size,262);assert(!exported.some(x=>x.telegram_id===99999));assert(!exported.some(x=>'export_cursor' in x));
+ assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action='data.export'").first<Row>())!.n,2);
+});
+test('business exports preserve visit snapshots and private notes without exporting delivery credentials',async()=>{
+ const visit=await (await book(101)).json() as Row;
+ await db.prepare("INSERT INTO notes(barber_id,client_id,text) VALUES('demo-a',?,'PRIVATE TEST NOTE')").bind(visit.client_id).run();
+ for(const dataset of ['settings','users','barbers','services','barber_services','working_hours','absences','schedule_overrides','clients','bookings','notes']){
+  const response=await request('/api/owner/exports/'+dataset,1);assert.equal(response.status,200,dataset);
+  const data=await response.json() as Row;assert.equal(data.dataset,dataset);assert(Array.isArray(data.items));
+  const serialized=JSON.stringify(data);assert(!serialized.includes(token));assert(!serialized.includes(secret));
+  if(dataset==='bookings'){assert.equal(data.items[0].title_ru,visit.title_ru);assert.equal(data.items[0].price_min,visit.price_min);assert(!('idempotency_key' in data.items[0]));assert(!('request_hash' in data.items[0]));}
+  if(dataset==='notes')assert.equal(data.items[0].text,'PRIVATE TEST NOTE');
+ }
+});
+test('Telegram document export is signed, administrator-only, server-generated and rate-limited',async()=>{
+ const sent:{recipient:number;filename:string;contents:string}[]=[];
+ const routes=new Hono<AppEnv>();routes.onError((err,c)=>c.json({error:'INVALID_INPUT'},err instanceof HTTPException?err.status:err.name==='ZodError'?422:503));routes.use('/api/*',authenticate);
+ routes.route('/api',createExports(async(_env,recipient,filename,contents)=>{sent.push({recipient,filename,contents});return true;}));
+ const post=(id:number|null,body:unknown={delivery:'telegram'},dataset='services')=>routes.request('https://demo.test/api/owner/exports/'+dataset,{method:'POST',headers:{'Content-Type':'application/json',...(id?{'X-Telegram-Init-Data':signed(id)}:{})},body:JSON.stringify(body)},env);
+ assert.equal((await post(null)).status,401);assert.equal((await post(101)).status,403);
+ assert.equal((await post(1,{delivery:'telegram',chat_id:101})).status,422);
+ assert.equal((await post(1,{delivery:'telegram'},'outbox')).status,404);assert.equal(sent.length,0);
+ for(let i=0;i<3;i++)assert.equal((await post(1)).status,200);
+ assert.equal((await post(1)).status,429);assert.equal(sent.length,3);
+ for(const file of sent){assert.equal(file.recipient,1);assert.equal(file.filename,'37-services-0.json');const data=JSON.parse(file.contents);assert.equal(data.dataset,'services');assert(Array.isArray(data.items));assert(!file.contents.includes(token));}
+ assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action='data.export.telegram.sent'").first<Row>())!.n,3);
+});
+
+test('Telegram upload uses a JSON attachment, reports failures and never includes token in the file',async()=>{
+ let calls=0;
+ const fake:typeof fetch=async(url,options)=>{
+  calls++;assert.equal(String(url),`https://api.telegram.org/bot${token}/sendDocument`);
+  assert.equal(options!.method,'POST');const data=options!.body as FormData;
+  assert.equal(data.get('chat_id'),'1');assert.equal(data.get('protect_content'),null);
+  const file=data.get('document') as unknown as File;assert.equal(file.name,'37-services-0.json');assert.equal(file.type,'application/json');assert.equal(await file.text(),'{}');
+  return Response.json({ok:true});
+ };
+ assert.equal(await sendExportDocument(env,1,'37-services-0.json','{}',fake),true);assert.equal(calls,1);
+ assert.equal(await sendExportDocument(env,1,'file.json','{}',async()=>Response.json({ok:false},{status:429})),false);
+ assert.equal(await sendExportDocument(env,1,'file.json','{}',async()=>{throw Error('network');}),false);
+ assert.equal(await sendExportDocument({...env,BOT_TOKEN:undefined},1,'file.json','{}',fake),false);assert.equal(calls,1);
+});
 
 test('contact attestation requires a fresh signed challenge and own Telegram contact',async()=>{
  const enabled={...env,CONTACT_VERIFICATION_ENABLED:'true'};
@@ -139,6 +203,35 @@ test('immediate reply failure retains backoff and cron retries without losing th
  await processWebhook(env,secret,{update_id:836,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
  await runNotifications(env,send,'update:836');assert.equal(sent,1);
  assert.equal((await db.prepare('SELECT count(*) n FROM telegram_updates WHERE update_id=836').first<Row>())!.n,1);
+});
+test('immediate booking delivery is bounded to two matching jobs and leaves other bookings alone',async()=>{
+ await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ const visit=await (await book(101)).json() as Row;
+ await db.prepare("INSERT INTO outbox(id,booking_id,chat_id,text) VALUES('third-notice',?,102,'TEST THIRD')").bind(visit.id).run();
+ await db.prepare("INSERT INTO outbox(id,chat_id,text) VALUES('unrelated-notice',103,'TEST OTHER')").run();
+ const sent:Row[]=[];const send=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
+ await runNotifications(env,send,'booking:'+visit.id);assert.equal(sent.length,2);assert.deepEqual(sent.map(x=>x.chat_id).sort(),[101,201]);
+ assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE id IN('third-notice','unrelated-notice') AND state='pending'").first<Row>())!.n,2);
+ await Promise.all([runNotifications(env,send,'booking:'+visit.id),runNotifications(env,send)]);
+ assert.equal(sent.length,4);assert.equal(sent.filter(x=>x.chat_id===102).length,1);assert.equal(sent.filter(x=>x.chat_id===103).length,1);
+});
+test('self-test delivery sends only the explicitly queued self-test',async()=>{
+ const job=await (await request('/api/owner/notifications/self-test',1,'POST',{})).json() as Row;
+ await db.prepare("INSERT INTO outbox(id,chat_id,text) VALUES('other-job',102,'TEST OTHER')").run();
+ const sent:Row[]=[];await runNotifications(env,async(_env,_method,payload)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};},job.id);
+ assert.equal(sent.length,1);assert.equal(sent[0].chat_id,1);
+ assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='other-job'").first<Row>())!.state,'pending');
+});
+test('successful manual booking creation and cancellation register background delivery in a Worker context',async()=>{
+ const tasks:Promise<unknown>[]=[],context={waitUntil(p:Promise<unknown>){tasks.push(p);},passThroughOnException(){},props:{}};
+ const headers={'Content-Type':'application/json','X-Telegram-Init-Data':signed(1),'Idempotency-Key':'context_wire_manual'};
+ const response=await app.request('https://demo.test/api/manual-bookings',{method:'POST',headers,body:JSON.stringify({service_id:'cut',barber_id:'demo-a',starts_at:slot()})},env,context);
+ assert.equal(response.status,201);assert.equal(tasks.length,1);await Promise.all(tasks);
+ const visit=await response.json() as Row;
+ const cancel=await app.request('https://demo.test/api/bookings/'+visit.id,{method:'PATCH',headers,body:JSON.stringify({version:1,status:'cancelled'})},env,context);
+ assert.equal(cancel.status,200);assert.equal(tasks.length,2);await Promise.all(tasks);
+ // Manual demo client and unlinked staff have no Telegram recipients.
+ assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first<Row>())!.n,0);
 });
 test('expired and concurrently claimed invitations are acknowledged without rebinding or retries',async()=>{
  const invite=await (await request('/api/owner/barbers/demo-a/invitation',1,'POST',{})).json() as Row;
@@ -282,6 +375,28 @@ test('owner retry is atomic and cannot resurrect superseded or revoked staff mes
  const results=await Promise.all([request('/api/owner/notifications/notice-network/retry',1,'POST',{}),request('/api/owner/notifications/notice-network/retry',1,'POST',{})]);assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
  const job=await db.prepare("SELECT state,attempts FROM outbox WHERE id='notice-network'").first<Row>();assert.equal(job!.state,'pending');assert.equal(job!.attempts,0);
  assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action='notification.retry'").first<Row>())!.n,1);
+});
+test('verified phone reaches only the assigned barber in cards and creation transfer cancellation notices',async()=>{
+ for(const actor of [101,201,202])await request('/api/me',actor);
+ await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
+ await db.prepare("UPDATE barbers SET telegram_id=202 WHERE id='demo-b'").run();
+ const phone='+37400000000';
+ await db.prepare('UPDATE users SET phone=?,phone_verified_at=unixepoch() WHERE telegram_id=101').bind(phone).run();
+ const response=await request('/api/bookings',101,'POST',{service_id:'cut',barber_id:'demo-a',starts_at:slot()},'verified_phone_notice', {CONTACT_VERIFICATION_ENABLED:'true'});
+ assert.equal(response.status,201);const visit=await response.json() as Row;
+ const assigned=await (await request('/api/bookings?scope=staff',201)).json() as Row[];assert.equal(assigned[0].phone,phone);
+ assert.deepEqual(await (await request('/api/bookings?scope=staff',202)).json(),[]);
+ assert.equal((await request('/api/staff/demo-a/clients',202)).status,403);
+ const sent:Row[]=[];const send=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
+ await runNotifications(env,send);assert(sent.find(x=>x.chat_id===201)!.text.includes(phone));assert(!sent.find(x=>x.chat_id===101)!.text.includes(phone));
+ sent.length=0;
+ assert.equal((await request('/api/bookings/'+visit.id,1,'PATCH',{version:1,barber_id:'demo-b'})).status,200);
+ await runNotifications(env,send);
+ assert(!sent.find(x=>x.chat_id===201)!.text.includes(phone));assert(sent.find(x=>x.chat_id===202)!.text.includes(phone));assert(!sent.find(x=>x.chat_id===101)!.text.includes(phone));
+ assert.deepEqual(await (await request('/api/bookings?scope=staff',201)).json(),[]);
+ sent.length=0;
+ assert.equal((await request('/api/bookings/'+visit.id,101,'PATCH',{version:2,status:'cancelled'})).status,200);
+ await runNotifications(env,send);assert(sent.find(x=>x.chat_id===202)!.text.includes(phone));assert(!sent.find(x=>x.chat_id===101)!.text.includes(phone));
 });
 test('localized notification snapshots survive catalog edits and use recipient language at delivery',async()=>{
  await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
