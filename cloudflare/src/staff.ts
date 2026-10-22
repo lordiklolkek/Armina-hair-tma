@@ -25,7 +25,7 @@ staff.put('/owner/services/:id',ownerOnly,async c=>{
  .bind(d.title_hy,d.title_ru,d.description_hy,d.description_ru,d.price_min,d.price_max,d.duration,Number(d.active),d.sort_order,id),audit(c.env.DB,c.get('identity').id,'service.update',id)]);
  return c.json({ok:true});
 });
-staff.get('/owner/barbers',ownerOnly,async c=>c.json((await c.env.DB.prepare(`SELECT b.*,(SELECT count(*) FROM bookings k WHERE k.barber_id=b.id AND k.status IN('confirmed','pending') AND k.ends_at>unixepoch()) future_count FROM barbers b ORDER BY b.archived,b.name`).all()).results));
+staff.get('/owner/barbers',ownerOnly,async c=>c.json((await c.env.DB.prepare(`SELECT b.*,(SELECT count(*) FROM bookings k WHERE k.barber_id=b.id AND k.status IN('confirmed','pending') AND k.ends_at>unixepoch()) future_count,(SELECT count(*) FROM barber_services bs JOIN services s ON s.id=bs.service_id WHERE bs.barber_id=b.id AND s.active=1) service_count,(SELECT count(*) FROM working_hours h WHERE h.barber_id=b.id) working_hours_count FROM barbers b ORDER BY b.archived,b.name`).all()).results));
 staff.post('/owner/barbers',ownerOnly,async c=>{
  const d=z.object({name:text}).strict().parse(await c.req.json()),id=crypto.randomUUID();
  await c.env.DB.batch([c.env.DB.prepare('INSERT INTO barbers(id,name) VALUES(?,?)').bind(id,d.name),audit(c.env.DB,c.get('identity').id,'barber.create',id)]);
