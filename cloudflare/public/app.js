@@ -80,14 +80,26 @@ function renderBooking(){
   const card=el('div',null,'card'),master=[...state.catalog.barbers,...(state.transferBarbers||[])].find(b=>b.id===state.barber);card.append(el('h3',title(state.service)),el('p',master?.name||t('any')),el('p',`${dateText(state.time)} · ${timeText(state.time)}`),el('h3',price(state.service)));root.append(card);
   if(state.service.price_min!==state.service.price_max)root.append(el('p',t('rangeNote'),'notice'));
   root.append(el('p',t('privacy'),'muted'));
-  root.append(button(t('confirm')+' ↗',async()=>{
+  const confirmation=button(t('confirm')+' ↗',async()=>{
    state.key??=crypto.randomUUID();
    if(state.editing)await api('/bookings/'+state.editing.id,'PATCH',{version:state.editing.version,starts_at:state.time,...(state.barber!==state.editing.barber_id?{barber_id:state.barber}:{})});
    else await api(state.manual?'/manual-bookings':'/bookings','POST',{service_id:state.service.id,barber_id:state.barber,starts_at:state.time},state.key);
    state.step=5;await render();
-  },'primary'));return;
+  },'primary');
+  if(state.config.contact_verification&&!state.manual&&!state.editing){confirmation.disabled=true;const check=el('section',null,'card');root.append(check);void renderContactCheck(check,confirmation).catch(error=>toast(error.message));}
+  root.append(confirmation);return;
  }
  root.append(el('div','✓','success-mark'));heading(t('done'),t('doneCopy'));root.append(button(t('my'),()=>{state.view='my';return render();},'primary'),button(t('newBooking'),newFlow,'plain'));
+}
+async function renderContactCheck(panel,confirmation){
+ const current=await api('/me/contact');if(!panel.isConnected)return;
+ panel.replaceChildren(el('p',t(current.verified?'phoneVerified':'phoneConsent'),'notice'));confirmation.disabled=!current.verified;
+ if(current.verified)return;
+ panel.append(button(t('verifyPhone'),async()=>{
+  if(typeof tg?.requestContact!=='function')throw new Error(t('phoneTelegramRequired'));
+  await api('/me/contact-challenge','POST',{});
+  await new Promise(resolve=>tg.requestContact(()=>{void renderContactCheck(panel,confirmation).catch(error=>toast(error.message)).finally(resolve);}));
+ }),button(t('refresh'),()=>renderContactCheck(panel,confirmation)));
 }
 async function renderBookings(scope,target=root,barberId=null){
  if(target===root)heading(scope==='all'?t('allBookings'):scope==='staff'?t('staff'):t('my'));
@@ -166,6 +178,7 @@ async function ownerSettings(panel){
 async function ownerNotifications(panel){
  panel.replaceChildren(el('h2',t('notifications')),el('p',t('notificationsHint'),'muted'));
  const summary=el('p',null,'notice'),actions=el('div',null,'actions'),confirm=el('div');panel.append(summary,actions,confirm);
+ const connection=el('p',null,'notice');panel.append(connection);actions.append(button(t('botConnection'),async()=>{const status=await api('/owner/telegram-status');connection.textContent=[status.ok?(status.webhook_matches?t('botConnected'):t('botStillLegacy')):t('botUnavailable'),status.bot_username?'@'+status.bot_username:'',status.webhook_origin||'',status.pending_updates!==null&&status.pending_updates!==undefined?`${t('pendingTelegramUpdates')}: ${status.pending_updates}`:''].filter(Boolean).join(' · ');}));
  actions.append(button(t('refresh'),()=>ownerNotifications(panel)),button(t('checkNotifications'),()=>{confirm.replaceChildren(el('p',t('selfTestHint'),'notice'),button(t('sendSelfTest'),async()=>{const job=await api('/owner/notifications/self-test','POST',{});confirm.replaceChildren(el('p',`${t('selfTestQueued')} · ${t(job.state)}`,'notice'));await load(true);}),button(t('back'),()=>confirm.replaceChildren()));}));
  const filter=select(panel,t('deliveryState'),'notification_state',['failed','pending','sending','sent'].map(s=>[s,t(s)]),'failed'),list=el('div'),more=button(t('loadMore'),()=>load(false));panel.append(list,more);more.hidden=true;let cursor=null,generation=0;
  async function load(reset=true){const ticket=reset?++generation:generation;if(reset){cursor=null;list.replaceChildren();}const query=new URLSearchParams({state:filter.value});if(cursor)query.set('cursor',cursor);more.hidden=true;const page=await api('/owner/notifications?'+query);if(ticket!==generation||!panel.isConnected)return;
@@ -277,12 +290,12 @@ async function staffClients(panel,id){
  for(const client of clients){const f=el('form',null,'card');f.append(el('h3',client.name));input(f,t('note'),'note',client.note||'','textarea');formSave(f,async d=>{await api(`/staff/${id}/notes/${client.id}`,'PUT',{text:d.get('note')});});panel.append(f);}
 }
 function renderLinks(panel,barberId=null){
- panel.append(el('h3',t('linksQr')),el('p',state.config.telegram_app_url?t('telegramLinksHint'):t('browserLinksHint'),'notice'));
+ panel.append(el('h3',t('linksQr')),el('p',state.config.telegram_app_url||state.config.telegram_bot_username?t('telegramLinksHint'):t('browserLinksHint'),'notice'));
  if(barberId&&!state.catalog.barbers.some(b=>b.id===barberId)){panel.append(el('p',t('errors').BARBER_UNAVAILABLE,'notice'));return;}
  let choice;if(!barberId){choice=select(panel,t('selectBarber'),'link_barber',[['',t('wholeShop')],...state.catalog.barbers.map(b=>[b.id,b.name])]);}
  const box=el('div',null,'card');panel.append(box);
  function draw(){
-  box.replaceChildren();const id=barberId||choice.value||null,url=bookingLink(location.origin,state.config.telegram_app_url,id);
+  box.replaceChildren();const id=barberId||choice.value||null,url=bookingLink(location.origin,state.config.telegram_app_url,id,state.config.telegram_bot_username);
   const field=input(box,t('bookingLink'),'booking_link',url);field.readOnly=true;
   const canvas=el('canvas');const pixels=qrPixels(url);canvas.width=canvas.height=pixels.size;canvas.style.cssText='display:block;width:240px;max-width:100%;height:auto;margin:20px auto;background:white';canvas.setAttribute('role','img');canvas.setAttribute('aria-label',t('linksQr'));canvas.getContext('2d').putImageData(new ImageData(pixels.data,pixels.size,pixels.size),0,0);box.append(canvas);
   const actions=el('div',null,'actions');actions.append(button(t('copyLink'),async()=>{try{await navigator.clipboard.writeText(url);toast(t('copied'));}catch{field.focus();field.select();toast(t('copyManually'));}}));

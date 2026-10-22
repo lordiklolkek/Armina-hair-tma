@@ -1,11 +1,13 @@
 import qrcode from './vendor/qrcode.js';
 const validId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,80}$/.test(value);
-export function bookingLink(origin,telegramEntry='',barberId=null){
+export function bookingLink(origin,telegramEntry='',barberId=null,botUsername=''){
  if(barberId!==null&&!validId(barberId))throw Error('INVALID_BARBER');
  const telegram=/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}(?:\/[A-Za-z0-9_]{1,64})?$/.test(telegramEntry);
- const url=telegram?new URL(telegramEntry):new URL('/',origin);
+ const bot=!telegram&&/^[A-Za-z0-9_]{5,32}$/.test(botUsername)&&(!barberId||barberId.length<=57);
+ const url=telegram?new URL(telegramEntry):bot?new URL('https://t.me/'+botUsername):new URL('/',origin);
  if(!['https:','http:'].includes(url.protocol))throw Error('INVALID_ORIGIN');
- if(barberId)url.searchParams.set(telegram?'startapp':'barber',telegram?'barber_'+barberId:barberId);
+ if(barberId)url.searchParams.set(telegram?'startapp':bot?'start':'barber',telegram||bot?'barber_'+barberId:barberId);
+ else if(bot)url.searchParams.set('start','booking');
  return url.toString();
 }
 export function linkedBarber(search,startParam,availableIds){
