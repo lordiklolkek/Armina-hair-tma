@@ -3,6 +3,16 @@ import { digest, equal, ids } from './auth';
 import { nowSeconds, guard, audit } from './booking';
 import { HTTPException } from 'hono/http-exception';
 import { renderNotice } from './messages';
+import { verifiedContactStatements, contactEnabled } from './contact';
+
+export function launchKeyboard(env:Env,language:string,barberId?:string){
+ try{
+  const url=new URL(env.APP_URL||'');
+  if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)return null;
+  if(barberId)url.searchParams.set('barber',barberId);
+  return {inline_keyboard:[[{text:language==='ru'?'Открыть 37 Barbershop':'Բացել 37 Barbershop',web_app:{url:url.toString()}}]]};
+ }catch{return null;}
+}
 
 export async function telegramCall(env:Env,method:string,payload:unknown){
  if(!env.BOT_TOKEN)throw Error('TELEGRAM_NOT_CONFIGURED');
@@ -21,20 +31,37 @@ export async function processWebhook(env:Env,secret:string,update:Row){
  if(env.APP_MODE!=='demo'||!Number.isSafeInteger(actor)||message?.chat?.type!=='private'||message.chat.id!==actor||!ids(env.DEMO_USER_IDS).includes(String(actor)))return;
  const existing=await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first();if(existing)return;
  const text=String(message.text||''),invite=/^\/start(?:@\w+)? join_([a-f0-9]{32})$/.exec(text);
+ const preferred=/^\/start(?:@\w+)? barber_([A-Za-z0-9_-]{1,57})$/.exec(text);
  const user=await env.DB.prepare('SELECT language FROM users WHERE telegram_id=?').bind(actor).first<{language:string}>();
- const statements:D1PreparedStatement[]=[env.DB.prepare('INSERT INTO telegram_updates(update_id) VALUES(?)').bind(update.update_id),env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(actor)];
+ const base=()=>[env.DB.prepare('INSERT INTO telegram_updates(update_id) VALUES(?)').bind(update.update_id),env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(actor)];
+ const statements:D1PreparedStatement[]=base();
  if(invite){
   const hash=await digest(invite[1]);
   statements.push(...guard(env.DB,`EXISTS(SELECT 1 FROM invitations i JOIN barbers b ON b.id=i.barber_id
-   WHERE i.token_hash=? AND i.used_by IS NULL AND i.expires_at>unixepoch() AND b.active=1 AND b.archived=0 AND b.telegram_id IS NULL)`,hash),
+   WHERE i.token_hash=? AND i.used_by IS NULL AND i.expires_at>unixepoch() AND b.active=1 AND b.archived=0 AND b.telegram_id IS NULL)
+   AND NOT EXISTS(SELECT 1 FROM barbers WHERE telegram_id=?)`,hash,actor),
    env.DB.prepare('UPDATE barbers SET telegram_id=?,version=version+1 WHERE id=(SELECT barber_id FROM invitations WHERE token_hash=?)').bind(actor,hash),
    env.DB.prepare('UPDATE invitations SET used_by=? WHERE token_hash=?').bind(actor,hash),audit(env.DB,actor,'invitation.accept',hash));
  }
- const response=user?.language==='ru'?(invite?'ДЕМО · Доступ подтверждён.':message.contact?'ДЕМО · Настоящие номера не сохраняются.':'37 Barbershop · Неофициальная демонстрация. Реальные записи не принимаются.'):
-  (invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։');
- statements.push(env.DB.prepare('INSERT INTO outbox(id,chat_id,text) VALUES(?,?,?)').bind(`update:${update.update_id}`,actor,response));
+ const verification=message.contact?verifiedContactStatements(env,update,actor):null;
+ if(verification)statements.push(...verification);
+ const invalid=user?.language==='ru'?(invite?'Приглашение недействительно, уже использовано или доступ отозван. Попросите администратора создать новое.':'Номер не подтверждён. Откройте приложение, нажмите подтверждение номера и поделитесь собственным контактом через Telegram.'):
+  (invite?'Հրավերն անվավեր է, արդեն օգտագործված է կամ մուտքը չեղարկված է։ Խնդրեք ադմինիստրատորին ստեղծել նորը։':'Համարը հաստատված չէ։ Բացեք հավելվածը, սկսեք համարի հաստատումը և Telegram-ի միջոցով ուղարկեք ձեր սեփական կոնտակտը։');
+ const response=user?.language==='ru'?(invite?'ДЕМО · Доступ подтверждён.':message.contact?verification?'Номер подтверждён через Telegram.':contactEnabled(env)?invalid:'ДЕМО · Настоящие номера не сохраняются.':'37 Barbershop · Неофициальная демонстрация. Реальные записи не принимаются.'):
+  (invite?'ԴԵՄՈ · Մուտքը հաստատված է։':message.contact?verification?'Համարը հաստատված է Telegram-ի միջոցով։':contactEnabled(env)?invalid:'ԴԵՄՈ · Իրական հեռախոսահամարները չեն պահպանվում։':'37 Barbershop · Ոչ պաշտոնական ցուցադրություն։ Իրական գրանցումներ չեն ընդունվում։');
+ const keyboard=launchKeyboard(env,user?.language||'hy',preferred?.[1]);
+ const reply=(body:string)=>env.DB.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,?,?,?)').bind(`update:${update.update_id}`,actor,body,keyboard?JSON.stringify(keyboard):null);
+ statements.push(reply(response));
  try{await env.DB.batch(statements);}catch(error){
   if(await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first())return;
+  // Invalid/replayed invitations and expired contact challenges are final
+  // business outcomes. Acknowledge them instead of causing Telegram retries.
+  if((invite||verification)&&String(error).includes('CHECK constraint failed: ok=1')){
+   try{await env.DB.batch([...base(),reply(invalid)]);}catch(fallback){
+    if(!await env.DB.prepare('SELECT update_id FROM telegram_updates WHERE update_id=?').bind(update.update_id).first())throw fallback;
+   }
+   return;
+  }
   throw error;
  }
 }
@@ -80,10 +107,20 @@ export async function runNotifications(env:Env,send=telegramCall){
    }
    catch{await env.DB.prepare("UPDATE outbox SET state='failed',last_error='INVALID_PAYLOAD',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
   }
-  const result=await send(env,'sendMessage',{chat_id:job.chat_id,text});
+  let markup:unknown;
+  if(job.reply_markup){
+   try{
+    markup=JSON.parse(job.reply_markup);
+    // Compare to a server-built keyboard, never trust an arbitrary stored URL.
+    const url=new URL((markup as Row).inline_keyboard?.[0]?.[0]?.web_app?.url||'');
+    const expected=launchKeyboard(env,(markup as Row).inline_keyboard?.[0]?.[0]?.text==='Открыть 37 Barbershop'?'ru':'hy',url.searchParams.get('barber')||undefined);
+    if(!expected||JSON.stringify(expected)!==JSON.stringify(markup))throw Error();
+   }catch{await env.DB.prepare("UPDATE outbox SET state='failed',last_error='INVALID_PAYLOAD',lease_until=NULL WHERE id=? AND lease_token=?").bind(id,lease).run();continue;}
+  }
+  const result=await send(env,'sendMessage',{chat_id:job.chat_id,text,...(markup?{reply_markup:markup}:{})});
   const failed=result.code===403||result.code===400||job.attempts>=5;
   await env.DB.prepare('UPDATE outbox SET text=?,state=?,last_error=?,next_attempt_at=?,lease_until=NULL WHERE id=? AND lease_token=?')
    .bind(text,result.ok?'sent':failed?'failed':'pending',result.ok?null:`TELEGRAM_${result.code}`,nowSeconds()+Math.max(result.retry_after||0,Math.min(3600,30*2**Number(job.attempts))),id,lease).run();
  }
- await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400)]);
+ await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
 }

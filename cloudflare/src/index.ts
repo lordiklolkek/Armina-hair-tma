@@ -8,6 +8,9 @@ import { createBooking, bookingInput, getSlots, dayInput, allowedDate, audit, gu
 import { staff } from './staff';
 import { calendar } from './calendar';
 import { diagnostics } from './diagnostics';
+import { contact, contactEnabled } from './contact';
+import { checkBotConnection } from './bot-status';
+import { forwardLegacyCallback } from './legacy';
 import { processWebhook, runNotifications } from './telegram';
 
 export const app=new Hono<AppEnv>();
@@ -29,6 +32,8 @@ app.onError((err,c)=>{
 });
 app.get('/health',async c=>{try{await c.env.DB.prepare('SELECT 1').first();return c.json({ok:true,mode:'demo'});}catch{return c.json({ok:false},503);}});
 app.get('/api/config',async c=>c.json({...await c.env.DB.prepare('SELECT * FROM settings WHERE id=1').first(),mode:'demo',timezone:'Asia/Yerevan',currency:'AMD',real_bookings:false,
+ contact_verification:contactEnabled(c.env),
+ telegram_bot_username:/^[A-Za-z0-9_]{5,32}$/.test(c.env.BOT_USERNAME||'')&&c.env.WEBHOOK_SECRET&&c.env.TELEGRAM_LINKS_ENABLED==='true'?c.env.BOT_USERNAME:'',
  telegram_app_url:/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}(?:\/[A-Za-z0-9_]{1,64})?$/.test(c.env.MINI_APP_URL||'')?c.env.MINI_APP_URL:''}));
 app.get('/api/catalog',async c=>{
  const [services,barbers,links,away]=await c.env.DB.batch([
@@ -42,7 +47,10 @@ app.get('/api/catalog',async c=>{
 app.post('/telegram/webhook',async c=>{
  // Reject before reading JSON. Webhook registration is deliberately not automatic.
  if(!c.env.WEBHOOK_SECRET||!equal(c.req.header('X-Telegram-Bot-Api-Secret-Token')||'',c.env.WEBHOOK_SECRET))throw new HTTPException(403,{message:'FORBIDDEN'});
- await processWebhook(c.env,c.req.header('X-Telegram-Bot-Api-Secret-Token')!,await c.req.json());return c.json({ok:true});
+ const update=await c.req.json();
+ if(update.callback_query)await forwardLegacyCallback(c.env,update);
+ else await processWebhook(c.env,c.req.header('X-Telegram-Bot-Api-Secret-Token')!,update);
+ return c.json({ok:true});
 });
 app.use('/api/*',authenticate);
 app.get('/api/me',c=>c.json({...c.get('identity'),mode:'demo'}));
@@ -93,11 +101,20 @@ app.patch('/api/bookings/:id',async c=>{
 app.route('/api',staff);
 app.route('/api',calendar);
 app.route('/api',diagnostics);
+app.route('/api',contact);
 app.get('/api/owner/diagnostics',ownerOnly,async c=>c.json((await c.env.DB.prepare('SELECT state,count(*) count FROM outbox GROUP BY state').all()).results));
+app.get('/api/owner/telegram-status',ownerOnly,async c=>{
+ const cached=await c.env.DB.prepare("SELECT payload,checked_at FROM integration_status WHERE id='telegram'").first<Row>();
+ if(cached&&cached.checked_at>nowSeconds()-60)return c.json(JSON.parse(cached.payload));
+ return c.json(await checkBotConnection(c.env)||{ok:false,checked_at:null});
+});
 app.put('/api/owner/settings',ownerOnly,async c=>{
  const d=z.object({name:z.string().trim().min(1).max(100),address:z.string().trim().min(1).max(250),logo_url:z.url().refine(v=>new URL(v).protocol==='https:').nullable(),advance_days:z.number().int().min(1).max(90),notice_minutes:z.number().int().min(0).max(1440)}).strict().parse(await c.req.json());
  await c.env.DB.batch([c.env.DB.prepare('UPDATE settings SET name=?,address=?,logo_url=?,advance_days=?,notice_minutes=? WHERE id=1').bind(d.name,d.address,d.logo_url,d.advance_days,d.notice_minutes),audit(c.env.DB,c.get('identity').id,'settings.update','1')]);return c.json({ok:true});
 });
 app.all('/api/*',c=>c.json({error:'NOT_FOUND'},404));
 app.all('*',c=>c.env.ASSETS?c.env.ASSETS.fetch(c.req.raw):c.text('37 Barbershop · Demo',200));
-export default {fetch:app.fetch,scheduled:(_event:ScheduledController,env:Env,ctx:ExecutionContext)=>ctx.waitUntil(runNotifications(env))};
+export default {fetch:app.fetch,scheduled:(_event:ScheduledController,env:Env,ctx:ExecutionContext)=>{
+ ctx.waitUntil(runNotifications(env));
+ ctx.waitUntil(checkBotConnection(env));
+}};

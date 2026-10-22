@@ -35,7 +35,7 @@ export const authenticate: MiddlewareHandler<AppEnv> = async(c,next)=>{
  await c.env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(id).run();
  const user=await c.env.DB.prepare('SELECT language FROM users WHERE telegram_id=?').bind(id).first<{language:'hy'|'ru'}>();
  const barber=await c.env.DB.prepare('SELECT id FROM barbers WHERE telegram_id=? AND active=1 AND archived=0').bind(id).first<{id:string}>();
- c.set('identity',{id,owner:ids(c.env.OWNER_IDS).includes(String(id)),barberId:barber?.id||null,language:user?.language||'hy'});
+ c.set('identity',{id,owner:[...ids(c.env.OWNER_IDS),...ids(c.env.ADMIN_IDS)].includes(String(id)),barberId:barber?.id||null,language:user?.language||'hy'});
  const window=Math.floor(Date.now()/60000);
  const count=await c.env.DB.prepare(`INSERT INTO rate_limits(key,window,count) VALUES(?,?,1)
  ON CONFLICT(key) DO UPDATE SET count=CASE WHEN window=excluded.window THEN count+1 ELSE 1 END,window=excluded.window RETURNING count`).bind(`user:${id}`,window).first<{count:number}>();
