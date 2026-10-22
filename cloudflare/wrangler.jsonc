@@ -7,7 +7,7 @@
   "workers_dev": true,
   "preview_urls": false,
   "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
-  "vars": {"APP_MODE": "demo",
+  "vars": {"APP_MODE": "demo", "ACTIVE_BOT": "next",
     "OPS_ALERTS_ENABLED": "true", "BOT_USERNAME": "ArminaHair_Bot", "NEXT_BOT_USERNAME": "Barber37Bot", "APP_URL": "https://barbershop-37-demo.barbershop-37.workers.dev", "CONTACT_VERIFICATION_ENABLED": "true", "TELEGRAM_LINKS_ENABLED": "true", "LEGACY_CALLBACK_FORWARDING_ENABLED": "true", "RENDER_GUARD_COMMIT": "d1bd09d9f81f0a0e77461d55944b0e4433c11f78"},
   "d1_databases": [{"binding": "DB", "database_name": "barbershop-37-demo", "database_id": "9ace1023-9360-4658-a68d-253a5946018d", "migrations_dir": "migrations"}],
   "triggers": {"crons": ["* * * * *"]},
