@@ -65,8 +65,10 @@ export async function processWebhook(env:Env,secret:string,update:Row){
   throw error;
  }
 }
-export async function runNotifications(env:Env,send=telegramCall){
+export async function runNotifications(env:Env,send=telegramCall,replyId?:string){
  if(env.APP_MODE!=='demo'||!env.BOT_TOKEN)return;
+ if(replyId&&!/^update:\d+$/.test(replyId))return;
+ if(!replyId){
  await env.DB.prepare("UPDATE outbox SET state='failed',last_error='ATTEMPTS_EXHAUSTED' WHERE attempts>=5 AND state IN('pending','sending') AND (lease_until IS NULL OR lease_until<?)").bind(nowSeconds()).run();
  // A bounded batch keeps each tick below the free invocation query limit.
  for(const [suffix,seconds,min] of [['24h',86400,7200],['2h',7200,0]] as const){
@@ -75,7 +77,11 @@ export async function runNotifications(env:Env,send=telegramCall){
    FROM bookings b JOIN clients c ON c.id=b.client_id JOIN users u ON u.telegram_id=c.telegram_id JOIN booking_notification_snapshot s ON s.id=b.id
    WHERE b.status='confirmed' AND b.starts_at>unixepoch()+? AND b.starts_at<=unixepoch()+?`).bind(suffix,suffix==='24h'?'reminder24h':'reminder2h',min,seconds).run();
  }
- const due=(await env.DB.prepare("SELECT id FROM outbox WHERE (state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?) ORDER BY next_attempt_at LIMIT 5").bind(nowSeconds(),nowSeconds()).all<{id:string}>()).results;
+ }
+ // Webhook replies bypass the five-minute cron delay but can claim only their
+ // own persisted job. The same lease protects against cron/retry races.
+ const due=replyId?(await env.DB.prepare("SELECT id FROM outbox WHERE id=? AND ((state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?))").bind(replyId,nowSeconds(),nowSeconds()).all<{id:string}>()).results:
+  (await env.DB.prepare("SELECT id FROM outbox WHERE (state='pending' AND next_attempt_at<=?) OR (state='sending' AND lease_until<?) ORDER BY next_attempt_at LIMIT 5").bind(nowSeconds(),nowSeconds()).all<{id:string}>()).results;
  for(const {id} of due){
   const lease=crypto.randomUUID();
   const job=await env.DB.prepare(`UPDATE outbox SET state='sending',lease_token=?,lease_until=?,attempts=attempts+1
@@ -122,5 +128,5 @@ export async function runNotifications(env:Env,send=telegramCall){
   await env.DB.prepare('UPDATE outbox SET text=?,state=?,last_error=?,next_attempt_at=?,lease_until=NULL WHERE id=? AND lease_token=?')
    .bind(text,result.ok?'sent':failed?'failed':'pending',result.ok?null:`TELEGRAM_${result.code}`,nowSeconds()+Math.max(result.retry_after||0,Math.min(3600,30*2**Number(job.attempts))),id,lease).run();
  }
- await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
+ if(!replyId)await env.DB.batch([env.DB.prepare('DELETE FROM rate_limits WHERE window<?').bind(Math.floor(Date.now()/60000)-60),env.DB.prepare('DELETE FROM telegram_updates WHERE processed_at<?').bind(nowSeconds()-7*86400),env.DB.prepare('DELETE FROM invitations WHERE expires_at<?').bind(nowSeconds()-86400),env.DB.prepare('DELETE FROM contact_challenges WHERE expires_at<?').bind(nowSeconds()-86400)]);
 }

@@ -50,7 +50,16 @@ app.post('/telegram/webhook',async c=>{
  if(!c.env.WEBHOOK_SECRET||!equal(c.req.header('X-Telegram-Bot-Api-Secret-Token')||'',c.env.WEBHOOK_SECRET))throw new HTTPException(403,{message:'FORBIDDEN'});
  const update=await c.req.json();
  if(update.callback_query)await forwardLegacyCallback(c.env,update);
- else await processWebhook(c.env,c.req.header('X-Telegram-Bot-Api-Secret-Token')!,update);
+ else {
+  await processWebhook(c.env,c.req.header('X-Telegram-Bot-Api-Secret-Token')!,update);
+  const delivery=runNotifications(c.env,undefined,`update:${update.update_id}`).catch(()=>{
+   // The persisted job remains retryable; never log the update or recipient.
+   console.error(JSON.stringify({event:'telegram_reply_deferred'}));
+  });
+  let execution:{waitUntil(promise:Promise<unknown>):void}|undefined;
+  try{execution=c.executionCtx;}catch{/* Direct test requests have no context. */}
+  if(execution)execution.waitUntil(delivery);else await delivery;
+ }
  return c.json({ok:true});
 });
 app.use('/api/*',authenticate);
