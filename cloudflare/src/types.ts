@@ -1,4 +1,5 @@
 export interface Env {
+ BOT_REPLACEMENT_REQUEST?: string; ACTIVE_BOT?: string; NEXT_WEBHOOK_SECRET?: string; PREVIOUS_WEBHOOK_SECRET?: string; TELEGRAM_UPDATE_NAMESPACE?: string; NEXT_BOT_TOKEN?: string; NEXT_BOT_USERNAME?: string;
  DB: D1Database; ASSETS?: Fetcher; BOT_TOKEN?: string; WEBHOOK_SECRET?: string;
  OWNER_IDS?: string; DEMO_USER_IDS?: string; APP_MODE: string; BOT_USERNAME?: string; MINI_APP_URL?: string;
  ADMIN_IDS?: string; APP_URL?: string; CONTACT_VERIFICATION_ENABLED?: string; TELEGRAM_LINKS_ENABLED?: string;

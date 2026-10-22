@@ -1,3 +1,5 @@
+import { activeBotEnv } from './bot-installation';
+import { refreshReplacementProbe, runApprovedReplacement } from './bot-replacement';
 import { queueOperationalAlert } from './ops';
 import { updateArmenianMenu } from './menu';
 import { Hono } from 'hono';
@@ -5,7 +7,7 @@ import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
 import { z, ZodError } from 'zod';
 import type { AppEnv, Env, Row } from './types';
-import { authenticate, ownerOnly, equal } from './auth';
+import { authenticate, ownerOnly, equal, ids } from './auth';
 import { createBooking, bookingInput, getSlots, dayInput, allowedDate, audit, guard, nowSeconds } from './booking';
 import { staff } from './staff';
 import { calendar } from './calendar';
@@ -16,10 +18,10 @@ import { forwardLegacyCallback } from './legacy';
 import { runApprovedCutover } from './cutover';
 import { exports } from './exports';
 import { deferDelivery } from './delivery';
-import { processWebhook, runNotifications } from './telegram';
+import { processWebhook, runNotifications, webhookReplyId } from './telegram';
 
 export const app=new Hono<AppEnv>();
-app.use('*',async(c,next)=>{await next();c.header('X-Content-Type-Options','nosniff');c.header('Referrer-Policy','no-referrer');c.header('Cache-Control','no-store');});
+app.use('*',async(c,next)=>{c.env=activeBotEnv(c.env);await next();c.header('X-Content-Type-Options','nosniff');c.header('Referrer-Policy','no-referrer');c.header('Cache-Control','no-store');});
 app.use('/api/*',bodyLimit({maxSize:16384,onError:c=>c.json({error:'BODY_TOO_LARGE'},413)}));
 app.use('/telegram/*',bodyLimit({maxSize:32768,onError:c=>c.json({error:'BODY_TOO_LARGE'},413)}));
 app.onError((err,c)=>{
@@ -37,7 +39,7 @@ app.onError((err,c)=>{
 });
 app.get('/health',async c=>{try{await c.env.DB.prepare('SELECT 1').first();return c.json({ok:true,mode:'demo'});}catch{return c.json({ok:false},503);}});
 app.get('/api/config',async c=>c.json({...await c.env.DB.prepare('SELECT * FROM settings WHERE id=1').first(),mode:'demo',timezone:'Asia/Yerevan',currency:'AMD',real_bookings:false,
- contact_verification:contactEnabled(c.env),
+ bot_replacement_active:c.env.ACTIVE_BOT==='next',contact_verification:contactEnabled(c.env),
  telegram_bot_username:/^[A-Za-z0-9_]{5,32}$/.test(c.env.BOT_USERNAME||'')&&c.env.WEBHOOK_SECRET&&c.env.TELEGRAM_LINKS_ENABLED==='true'?c.env.BOT_USERNAME:'',
  telegram_app_url:/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}(?:\/[A-Za-z0-9_]{1,64})?$/.test(c.env.MINI_APP_URL||'')?c.env.MINI_APP_URL:''}));
 app.get('/api/catalog',async c=>{
@@ -50,13 +52,23 @@ app.get('/api/catalog',async c=>{
  return c.json({services:services.results,barbers:barbers.results,links:links.results,absences:away.results});
 });
 app.post('/telegram/webhook',async c=>{
+ // Retained old webhook only redirects; it cannot mutate the shared database.
+ const incoming=c.req.header('X-Telegram-Bot-Api-Secret-Token')||'';
+ if(c.env.ACTIVE_BOT==='next'&&c.env.PREVIOUS_WEBHOOK_SECRET&&equal(incoming,c.env.PREVIOUS_WEBHOOK_SECRET)){
+  const update=await c.req.json(),message=update.message,actor=message?.from?.id;
+  const start=/^\/start(?:@\w+)? (barber_[A-Za-z0-9_-]{1,57}|join_[a-f0-9]{32}|booking)$/.exec(String(message?.text||''))?.[1]||'booking';
+  if(c.env.APP_MODE==='demo'&&Number.isSafeInteger(actor)&&message?.chat?.type==='private'&&message.chat.id===actor&&ids(c.env.DEMO_USER_IDS).includes(String(actor)))return c.json({method:'sendMessage',chat_id:actor,text:'37 Barbershop-ը տեղափոխվել է նոր բոտ։ Շարունակելու համար բացեք @'+c.env.BOT_USERNAME+'։',reply_markup:{inline_keyboard:[[{text:'Գրանցվել',url:`https://t.me/${c.env.BOT_USERNAME}?start=${start}`}]]}});
+  const callback=update.callback_query;
+  if(typeof callback?.id==='string'&&callback.id.length<=256&&ids(c.env.DEMO_USER_IDS).includes(String(callback.from?.id)))return c.json({method:'answerCallbackQuery',callback_query_id:callback.id,text:'Բացեք նոր բոտը՝ @'+c.env.BOT_USERNAME,show_alert:true});
+  return c.json({ok:true});
+ }
  // Reject before reading JSON. Webhook registration is deliberately not automatic.
  if(!c.env.WEBHOOK_SECRET||!equal(c.req.header('X-Telegram-Bot-Api-Secret-Token')||'',c.env.WEBHOOK_SECRET))throw new HTTPException(403,{message:'FORBIDDEN'});
  const update=await c.req.json();
  if(update.callback_query)await forwardLegacyCallback(c.env,update);
  else {
   await processWebhook(c.env,c.req.header('X-Telegram-Bot-Api-Secret-Token')!,update);
-  deferDelivery(c,`update:${update.update_id}`);
+  deferDelivery(c,webhookReplyId(c.env,update.update_id));
  }
  return c.json({ok:true});
 });
@@ -129,7 +141,8 @@ app.put('/api/owner/settings',ownerOnly,async c=>{
 });
 app.all('/api/*',c=>c.json({error:'NOT_FOUND'},404));
 app.all('*',c=>c.env.ASSETS?c.env.ASSETS.fetch(c.req.raw):c.text('37 Barbershop · Demo',200));
-export default {fetch:app.fetch,scheduled:(_event:ScheduledController,env:Env,ctx:ExecutionContext)=>{
+export default {fetch:app.fetch,scheduled:(_event:ScheduledController,raw:Env,ctx:ExecutionContext)=>{
+ const env=activeBotEnv(raw);
  ctx.waitUntil(runNotifications(env));
- ctx.waitUntil((async()=>{await runApprovedCutover(env);await updateArmenianMenu(env);await queueOperationalAlert(env,await checkBotConnection(env));})());
+ ctx.waitUntil((async()=>{await runApprovedReplacement(raw);await runApprovedCutover(env);await updateArmenianMenu(env);await queueOperationalAlert(env,await checkBotConnection(env));await refreshReplacementProbe(env);})());
 }};
