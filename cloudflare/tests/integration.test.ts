@@ -7,6 +7,7 @@ import { app } from '../src/index';
 import { runNotifications, processWebhook } from '../src/telegram';
 import { checkBotConnection } from '../src/bot-status';
 import { forwardLegacyCallback } from '../src/legacy';
+import { runApprovedCutover } from '../src/cutover';
 import type { Env, Row } from '../src/types';
 
 let mf:Miniflare,env:Env,db:D1Database;
@@ -130,6 +131,16 @@ test('bot connection monitoring uses only read methods and exposes no credential
  assert.equal((await request('/api/owner/telegram-status',101)).status,403);
  const exposed=await (await request('/api/owner/telegram-status',1)).json() as Row;assert.equal(exposed.pending_updates,2);assert(!JSON.stringify(exposed).includes('PRIVATE ERROR'));assert(!JSON.stringify(exposed).includes(token));
 });
+test('deployed invitation links stay disabled until monitoring confirms the new webhook',async()=>{
+ const configured={APP_URL:'https://demo.test/'};
+ assert.equal((await request('/api/owner/barbers/demo-a/invitation',1,'POST',{},undefined,configured)).status,409);
+ await db.prepare("INSERT INTO integration_status(id,payload,checked_at) VALUES('telegram',?,?)").bind(JSON.stringify({webhook_matches:false}),Math.floor(Date.now()/1000)).run();
+ assert.equal((await request('/api/owner/barbers/demo-a/invitation',1,'POST',{},undefined,configured)).status,409);
+ await db.prepare("UPDATE integration_status SET payload=? WHERE id='telegram'").bind(JSON.stringify({webhook_matches:true})).run();
+ assert.equal((await request('/api/owner/barbers/demo-a/invitation',1,'POST',{},undefined,configured)).status,200);
+ await db.prepare("UPDATE integration_status SET checked_at=0 WHERE id='telegram'").run();
+ assert.equal((await request('/api/owner/barbers/demo-b/invitation',1,'POST',{},undefined,configured)).status,409);
+});
 test('health, public demo catalog and private signed API',async()=>{
  assert.equal((await request('/health',null)).status,200);
  assert.equal((await (await request('/api/config',null)).json() as Row).real_bookings,false);
@@ -139,6 +150,39 @@ test('health, public demo catalog and private signed API',async()=>{
  assert.equal((await request('/api/me',999)).status,403);
  assert.equal((await request('/api/me',101,'GET',undefined,undefined,{APP_MODE:'production'})).status,503);
  assert.equal((await request('/api/owner/barbers',101)).status,403);
+});
+test('cutover stays inert without approval and refuses an unguarded Render server',async()=>{
+ let calls=0;const call=async()=>{calls++;return {};};
+ await runApprovedCutover(env,call,async()=>({}));assert.equal(calls,0);
+ const configured={...env,APP_URL:'https://barbershop-37-demo.barbershop-37.workers.dev',TELEGRAM_CUTOVER_REQUEST:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',RENDER_GUARD_COMMIT:'a'.repeat(40),LEGACY_CALLBACKS_RETIRED:'true'};
+ await runApprovedCutover(configured,call,async()=>({guard:'37-migration-v1',auto_configuration:true,source_commit:'a'.repeat(40)}));assert.equal(calls,0);
+ const result=await db.prepare('SELECT payload FROM integration_status WHERE id=?').bind('cutover:'+configured.TELEGRAM_CUTOVER_REQUEST).first<Row>();assert.equal(JSON.parse(result!.payload).state,'failed');
+});
+test('approved guarded cutover preserves pending updates verifies webhook and menu and runs once',async()=>{
+ const configured={...env,APP_URL:'https://barbershop-37-demo.barbershop-37.workers.dev',TELEGRAM_CUTOVER_REQUEST:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',RENDER_GUARD_COMMIT:'a'.repeat(40),LEGACY_CALLBACKS_RETIRED:'true'};
+ const methods:string[]=[];let switched=false;
+ const call=async(_env:Env,method:string,payload:Row)=>{methods.push(method);
+  if(method==='getMe')return {username:'TestOnly_Bot'};
+  if(method==='getWebhookInfo')return {url:switched?configured.APP_URL+'/telegram/webhook':'https://armina-hair-tma-demo.onrender.com/telegram/webhook'};
+  if(method==='setWebhook'){assert.equal(payload.drop_pending_updates,false);assert.equal(payload.secret_token,secret);switched=true;return true;}
+  if(method==='getChatMenuButton')return {web_app:{url:configured.APP_URL}};
+  return true;
+ };
+ const guard=async()=>({guard:'37-migration-v1',auto_configuration:false,source_commit:'a'.repeat(40)});
+ await Promise.all([runApprovedCutover(configured,call,guard),runApprovedCutover(configured,call,guard)]);
+ assert.deepEqual(methods,['getMe','getWebhookInfo','setWebhook','getWebhookInfo','setChatMenuButton','getChatMenuButton']);
+ await runApprovedCutover(configured,call,guard);assert.equal(methods.length,6);
+ const result=await db.prepare('SELECT payload FROM integration_status WHERE id=?').bind('cutover:'+configured.TELEGRAM_CUTOVER_REQUEST).first<Row>();assert.equal(JSON.parse(result!.payload).state,'complete');assert(!result!.payload.includes(secret));
+});
+test('uncertain cutover stops for inspection and retired test buttons never alter visits',async()=>{
+ const configured={...env,APP_URL:'https://barbershop-37-demo.barbershop-37.workers.dev',TELEGRAM_CUTOVER_REQUEST:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',RENDER_GUARD_COMMIT:'a'.repeat(40),LEGACY_CALLBACKS_RETIRED:'true'};
+ let writes=0;
+ const call=async(_env:Env,method:string)=>{if(method==='getMe')return {username:'TestOnly_Bot'};if(method==='getWebhookInfo')return {url:'https://armina-hair-tma-demo.onrender.com/telegram/webhook'};writes++;throw Error('TEST_TIMEOUT');};
+ const guard=async()=>({guard:'37-migration-v1',auto_configuration:false,source_commit:'a'.repeat(40)});
+ await runApprovedCutover(configured,call,guard);await runApprovedCutover(configured,call,guard);assert.equal(writes,1);
+ const result=await db.prepare('SELECT payload FROM integration_status WHERE id=?').bind('cutover:'+configured.TELEGRAM_CUTOVER_REQUEST).first<Row>();assert.equal(JSON.parse(result!.payload).step,'webhook');
+ await forwardLegacyCallback(configured,{callback_query:{id:'retired-test'}},async(_url,init)=>{const payload=JSON.parse(init!.body as string);assert.equal(payload.show_alert,true);assert(payload.text.includes('37 Barbershop'));return new Response('{"ok":true}');});
+ assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,0);
 });
 test('legacy callback forwarding is explicit bounded and never silently discards old actions',async()=>{
  const update={update_id:850,callback_query:{id:'test',from:{id:101},data:'confirm_1'}};
