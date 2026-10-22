@@ -1,3 +1,4 @@
+import { updateArmenianMenu } from '../src/menu';
 import { after, before, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
@@ -191,11 +192,29 @@ test('bot launch preserves personal barber selection and rejects unsafe persiste
  const configured={...env,APP_URL:'https://demo.test/'};
  await processWebhook(configured,secret,{update_id:830,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start barber_demo-a'}});
  const calls:Row[]=[];await runNotifications(configured,async(_e,_m,p)=>{calls.push(p as Row);return {ok:true,code:200,retry_after:0};});
- assert.equal(calls.length,1);assert.equal(calls[0].reply_markup.inline_keyboard[0][0].web_app.url,'https://demo.test/?barber=demo-a');
+ assert.equal(calls.length,1);assert.equal(calls[0].reply_markup.inline_keyboard[0][0].text,'Գրանցվել');assert.equal(calls[0].reply_markup.inline_keyboard[0][0].web_app.url,'https://demo.test/?barber=demo-a');
  await db.prepare("INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES('unsafe-button',101,'test',?)").bind(JSON.stringify({inline_keyboard:[[{text:'Open',web_app:{url:'https://evil.test/'}}]]})).run();
  await runNotifications(configured,async(_e,_m,p)=>{calls.push(p as Row);return {ok:true,code:200,retry_after:0};});assert.equal(calls.length,1);
  assert.equal((await db.prepare("SELECT last_error FROM outbox WHERE id='unsafe-button'").first<Row>())!.last_error,'INVALID_PAYLOAD');
 });
+test('queued legacy launch labels become Armenian without accepting extra buttons or foreign URLs',async()=>{
+ const configured={...env,APP_URL:'https://demo.test/'};
+ const sent:Row[]=[];
+ const send=async(_e:Env,_m:string,p:unknown)=>{sent.push(p as Row);return {ok:true,code:200,retry_after:0};};
+ for(const [i,label] of ['Открыть 37 Barbershop','Բացել 37 Barbershop','Գրանցվել'].entries()){
+  const keyboard={inline_keyboard:[[{text:label,web_app:{url:'https://demo.test/?barber=demo-a'}}]]};
+  await db.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,101,?,?)').bind('queued-label-'+i,'Փորձարկում',JSON.stringify(keyboard)).run();
+ }
+ await runNotifications(configured,send);
+ assert.equal(sent.length,3);assert(sent.every(p=>p.reply_markup.inline_keyboard[0][0].text==='Գրանցվել'));
+ for(const [i,url] of ['https://evil.test/?barber=demo-a','https://demo.test/?barber=demo-a&extra=1'].entries()){
+  const keyboard={inline_keyboard:[[{text:'Գրանցվել',web_app:{url}}]]};
+  await db.prepare('INSERT INTO outbox(id,chat_id,text,reply_markup) VALUES(?,101,?,?)').bind('unsafe-label-'+i,'Փորձարկում',JSON.stringify(keyboard)).run();
+ }
+ await runNotifications(configured,send);assert.equal(sent.length,3);
+ assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE id LIKE 'unsafe-label-%' AND last_error='INVALID_PAYLOAD'").first<Row>())!.n,2);
+});
+
 test('immediate webhook reply claims only its own job and stays single under a cron race',async()=>{
  const configured={...env,APP_URL:'https://demo.test/'};
  await db.prepare("INSERT INTO outbox(id,chat_id,text) VALUES('unrelated-notice',102,'unrelated')").run();
@@ -290,6 +309,29 @@ test('health, public demo catalog and private signed API',async()=>{
  assert.equal((await request('/api/me',101,'GET',undefined,undefined,{APP_MODE:'production'})).status,503);
  assert.equal((await request('/api/owner/barbers',101)).status,403);
 });
+test('Armenian menu update is explicitly enabled and changes only the verified existing label once',async()=>{
+ let calls=0,changed=false;const url='https://demo.test/';
+ const call=async(_e:Env,method:string,p:Row)=>{calls++;
+  if(method==='getMe')return {username:'TestOnly_Bot'};
+  if(method==='getChatMenuButton')return {type:'web_app',text:changed?'Գրանցվել':'37 Barbershop',web_app:{url}};
+  assert.equal(method,'setChatMenuButton');assert.deepEqual(p,{menu_button:{type:'web_app',text:'Գրանցվել',web_app:{url}}});changed=true;return true;
+ };
+ await updateArmenianMenu({...env,APP_URL:url},call);assert.equal(calls,0);
+ const configured={...env,APP_URL:url,TELEGRAM_MENU_LABEL_REQUEST:'armenian-v1'};
+ await Promise.all([updateArmenianMenu(configured,call),updateArmenianMenu(configured,call)]);
+ assert.equal(calls,4);assert(changed);await updateArmenianMenu(configured,call);assert.equal(calls,4);
+ assert.equal(JSON.parse((await db.prepare("SELECT payload FROM integration_status WHERE id='menu:armenian-v1'").first<Row>())!.payload).state,'complete');
+});
+
+test('Armenian menu update refuses another app and never retries an uncertain write',async()=>{
+ const configured={...env,APP_URL:'https://demo.test/',TELEGRAM_MENU_LABEL_REQUEST:'armenian-v1'};let writes=0;
+ await updateArmenianMenu(configured,async(_e,m)=>m==='getMe'?{username:'TestOnly_Bot'}:{type:'web_app',text:'old',web_app:{url:'https://other.test/'}});
+ assert.equal(JSON.parse((await db.prepare("SELECT payload FROM integration_status WHERE id='menu:armenian-v1'").first<Row>())!.payload).state,'failed');
+ await db.prepare("DELETE FROM integration_status WHERE id='menu:armenian-v1'").run();
+ const call=async(_e:Env,m:string)=>{if(m==='getMe')return {username:'TestOnly_Bot'};if(m==='getChatMenuButton')return {type:'web_app',text:'old',web_app:{url:'https://demo.test/'}};writes++;throw Error('TEST_TIMEOUT');};
+ await updateArmenianMenu(configured,call);await updateArmenianMenu(configured,call);assert.equal(writes,1);
+});
+
 test('cutover stays inert without approval and refuses an unguarded Render server',async()=>{
  let calls=0;const call=async()=>{calls++;return {};};
  await runApprovedCutover(env,call,async()=>({}));assert.equal(calls,0);
@@ -303,6 +345,7 @@ test('approved guarded cutover preserves pending updates verifies webhook and me
  const call=async(_env:Env,method:string,payload:Row)=>{methods.push(method);
   if(method==='getMe')return {username:'TestOnly_Bot'};
   if(method==='getWebhookInfo')return {url:switched?configured.APP_URL+'/telegram/webhook':'https://armina-hair-tma-demo.onrender.com/telegram/webhook'};
+  if(method==='setChatMenuButton')assert.equal(payload.menu_button.text,'Գրանցվել');
   if(method==='setWebhook'){assert.equal(payload.drop_pending_updates,false);assert.equal(payload.secret_token,secret);switched=true;return true;}
   if(method==='getChatMenuButton')return {web_app:{url:configured.APP_URL}};
   return true;
@@ -383,7 +426,7 @@ test('notification self-test targets the signed owner only and repeated presses 
  assert(ids[0]===ids[1]||ids[1]===ids[2]);const expected=new Set(ids).size;
  assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first<Row>())!.n,expected);
  const sent:Row[]=[];const sender=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
- await runNotifications(env,sender);assert.equal(sent.length,expected);assert(sent.every(s=>s.chat_id===1&&s.text.includes('Тест уведомлений')));await runNotifications(env,sender);assert.equal(sent.length,expected);
+ await runNotifications(env,sender);assert.equal(sent.length,expected);assert(sent.every(s=>s.chat_id===1&&s.text.includes('Ծանուցումների փորձարկում')));await runNotifications(env,sender);assert.equal(sent.length,expected);
  assert.equal((await db.prepare('SELECT count(*) n FROM bookings').first<Row>())!.n,0);
 });
 test('owner retry is atomic and cannot resurrect superseded or revoked staff messages',async()=>{
@@ -417,14 +460,14 @@ test('verified phone reaches only the assigned barber in cards and creation tran
  assert.equal((await request('/api/bookings/'+visit.id,101,'PATCH',{version:2,status:'cancelled'})).status,200);
  await runNotifications(env,send);assert(sent.find(x=>x.chat_id===202)!.text.includes(phone));assert(!sent.find(x=>x.chat_id===101)!.text.includes(phone));
 });
-test('localized notification snapshots survive catalog edits and use recipient language at delivery',async()=>{
+test('notification snapshots survive catalog edits and stay Armenian with Russian UI',async()=>{
  await request('/api/me',201);await db.prepare("UPDATE barbers SET telegram_id=201 WHERE id='demo-a'").run();
  const b=await (await book(101)).json() as Row;
  await request('/api/me/language',101,'PUT',{language:'ru'});
  await db.prepare("UPDATE services SET title_ru='Изменённая услуга',price_min=9000,price_max=9000 WHERE id='cut'").run();
  const sent:Row[]=[];await runNotifications(env,async(_env,method,payload)=>{assert.equal(method,'sendMessage');sent.push(payload as Row);return {ok:true,code:200,retry_after:0};});
  assert.equal(sent.length,2);const client=sent.find(s=>s.chat_id===101)!,barber=sent.find(s=>s.chat_id===201)!;
- assert(client.text.startsWith('Запись подтверждена\nСтрижка'));assert.match(client.text,/2\s000 ֏/);assert(!client.text.includes('Изменённая услуга'));
+ assert(client.text.startsWith('Գրանցումը հաստատված է\nԿտրվածք'));assert.match(client.text,/2000 ֏/);assert(!client.text.includes('Изменённая услуга'));
  assert(barber.text.startsWith('Նոր գրանցում'));assert(!barber.text.includes('confirmed'));assert(!('parse_mode' in client));
  assert.equal((await db.prepare('SELECT count(*) n FROM outbox WHERE booking_id=? AND state=\'sent\'').bind(b.id).first<Row>())!.n,2);
 });
@@ -456,14 +499,15 @@ test('reminders render the correct language and window without repeated delivery
  assert(short.id&&day.id);await request('/api/me/language',101,'PUT',{language:'ru'});
  await db.prepare("UPDATE outbox SET state='sent'").run();
  const sent:Row[]=[];const sender=async(_env:Env,_method:string,payload:unknown)=>{sent.push(payload as Row);return {ok:true,code:200,retry_after:0};};
- await runNotifications(env,sender);assert.equal(sent.length,2);assert(sent.find(s=>s.chat_id===101)!.text.startsWith('Скоро ваш визит'));assert(sent.find(s=>s.chat_id===102)!.text.startsWith('Գրանցման հիշեցում'));
+ await runNotifications(env,sender);assert.equal(sent.length,2);assert(sent.find(s=>s.chat_id===101)!.text.startsWith('Ձեր այցը շուտով է'));assert(sent.find(s=>s.chat_id===102)!.text.startsWith('Գրանցման հիշեցում'));
  await runNotifications(env,sender);assert.equal(sent.length,2);
  const rows=(await db.prepare("SELECT id,event_json FROM outbox WHERE id LIKE '%:reminder:%'").all<Row>()).results;assert.equal(rows.length,2);assert(rows.some(r=>r.id===short.id+':1:reminder:2h'));assert(rows.some(r=>r.id===day.id+':1:reminder:24h'));
 });
-test('webhook replies use saved language and absent bot username cannot issue a broken invitation',async()=>{
+test('webhook replies stay Armenian with Russian UI and absent bot username cannot issue a broken invitation',async()=>{
  await request('/api/me/language',101,'PUT',{language:'ru'});
  await processWebhook(env,secret,{update_id:780,message:{from:{id:101},chat:{id:101,type:'private'},text:'/start'}});
- const reply=await db.prepare("SELECT text FROM outbox WHERE id='update:780'").first<Row>();assert(reply!.text.includes('Реальные записи не принимаются'));assert(!reply!.text.includes('Ոչ պաշտոնական'));
+ const reply=await db.prepare("SELECT text FROM outbox WHERE id='update:780'").first<Row>();assert(reply!.text.includes('Իրական գրանցումներ չեն ընդունվում'));assert(!/[А-Яа-яЁё]/.test(reply!.text));
+ assert.equal((await db.prepare('SELECT language FROM users WHERE telegram_id=101').first<Row>())!.language,'ru');
  const r=await request('/api/owner/barbers/demo-a/invitation',1,'POST',{},undefined,{BOT_USERNAME:''});assert.equal(r.status,409);assert.equal((await r.json() as Row).error,'TELEGRAM_NOT_CONFIGURED');
 });
 test('new client limit is atomic even across two barbers',async()=>{
