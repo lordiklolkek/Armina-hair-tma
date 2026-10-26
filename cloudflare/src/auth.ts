@@ -34,10 +34,10 @@ export const authenticate: MiddlewareHandler<AppEnv> = async(c,next)=>{
  if(c.env.APP_MODE==='demo'&&!ids(c.env.DEMO_USER_IDS).includes(String(id))) throw new HTTPException(403,{message:'DEMO_PRIVATE'});
  await c.env.DB.prepare('INSERT OR IGNORE INTO users(telegram_id) VALUES(?)').bind(id).run();
  const user=await c.env.DB.prepare('SELECT language FROM users WHERE telegram_id=?').bind(id).first<{language:'hy'|'ru'}>();
- const barber=await c.env.DB.prepare('SELECT id FROM barbers WHERE telegram_id=? AND active=1 AND archived=0').bind(id).first<{id:string}>();
+ const barber=await c.env.DB.prepare('SELECT id,name FROM barbers WHERE telegram_id=? AND active=1 AND archived=0').bind(id).first<{id:string;name:string}>();
  const telegramUser=JSON.parse(new URLSearchParams(c.req.header('X-Telegram-Init-Data')||'').get('user')||'{}');
  const displayName=[telegramUser.first_name,telegramUser.last_name].filter(x=>typeof x==='string').join(' ').replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,100)||'Հաճախորդ';
- c.set('identity',{id,displayName,owner:[...ids(c.env.OWNER_IDS),...ids(c.env.ADMIN_IDS)].includes(String(id)),barberId:barber?.id||null,language:user?.language||'hy'});
+ c.set('identity',{id,displayName,owner:[...ids(c.env.OWNER_IDS),...ids(c.env.ADMIN_IDS)].includes(String(id)),barberId:barber?.id||null,barberName:barber?.name||null,language:user?.language||'hy'});
  const window=Math.floor(Date.now()/60000);
  const count=await c.env.DB.prepare(`INSERT INTO rate_limits(key,window,count) VALUES(?,?,1)
  ON CONFLICT(key) DO UPDATE SET count=CASE WHEN window=excluded.window THEN count+1 ELSE 1 END,window=excluded.window RETURNING count`).bind(`user:${id}`,window).first<{count:number}>();
