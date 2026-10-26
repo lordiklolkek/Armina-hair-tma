@@ -933,3 +933,19 @@ button[aria-busy=true]::after {
     padding-right:calc(14px + var(--safe-right));
   }
 }
+
+/* Single-use Telegram invitations: readable status, selectable URL, narrow WebViews. */
+.invitation-card{margin-top:20px;min-width:0}
+.invitation-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.invitation-top h3{margin:0}
+.invitation-status{font-size:13px;line-height:1.5;padding:6px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted)}
+.invitation-status[data-linked=true]{color:var(--accent);background:rgba(8,201,190,.08);border-color:rgba(8,201,190,.22)}
+.invitation-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+.invitation-actions>*{flex:1 1 180px;min-width:0;white-space:normal;text-align:center}
+.invitation-share{display:flex;justify-content:center;align-items:center;text-decoration:none}
+.invitation-share[aria-disabled=true]{opacity:.4;cursor:default}
+.invitation-link-box{min-width:0;border-top:1px solid var(--line);padding-top:16px;margin-top:18px}
+.invitation-link{width:100%;box-sizing:border-box;font-size:16px;line-height:1.6;resize:vertical;overflow-wrap:anywhere;word-break:break-all;-webkit-user-select:text;user-select:text}
+.invitation-timer{font-variant-numeric:tabular-nums;color:var(--accent)}
+.invitation-timer[data-expired=true]{color:var(--muted)}
+@media(max-width:380px){.invitation-actions>*{flex-basis:100%}}

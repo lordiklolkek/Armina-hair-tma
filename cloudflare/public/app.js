@@ -1,4 +1,5 @@
 import {words} from './i18n.js';
+import {mountInvitationPanel} from './invitations.js';
 import {icon,setupTelegramAppearance,askConfirmation} from './ui.js';
 import {bookingLink,linkedBarber,qrPixels} from './links.js';
 const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();setupTelegramAppearance(tg);
@@ -15,6 +16,7 @@ const dateText=v=>{if(language!=='hy')return new Intl.DateTimeFormat('ru-RU',{ti
 const today=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Yerevan',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`;};
 let toastTimer;
 let exportObjectUrl;
+let invitationCleanup;
 function clearExportDownload(){if(exportObjectUrl)URL.revokeObjectURL(exportObjectUrl);exportObjectUrl=null;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 async function api(path,method='GET',body,key){
@@ -55,7 +57,7 @@ function renderBotMoved(){
   link.href=url;link.addEventListener('click',event=>{if(tg?.openTelegramLink){event.preventDefault();tg.openTelegramLink(url);}});box.append(link);
  }root.append(box);
 }
-async function render(){clearExportDownload();chrome();root.replaceChildren();window.scrollTo(0,0);root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;if(state.moved){renderBotMoved();return;}try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
+async function render(){invitationCleanup?.();invitationCleanup=null;clearExportDownload();chrome();root.replaceChildren();window.scrollTo(0,0);root.classList.remove('screen-enter');void root.offsetWidth;root.classList.add('screen-enter');state.request++;if(state.moved){renderBotMoved();return;}try{if(state.view==='services')renderBooking();else if(state.view==='my')await renderBookings('mine');else if(state.view==='staff')await renderStaff(state.me.barberId);else await renderOwner();}catch(error){root.append(el('p',error.message,'notice'));}}
 function renderBooking(){
  if(state.step<5){const progress=el('ol',null,'booking-progress');progress.setAttribute('aria-label',t('bookingProgress'));for(const [i,key]of ['stepService','stepBarber','date','confirmStep'].entries()){const item=el('li',null,i+1===state.step?'current':i+1<state.step?'complete':'');item.append(el('span',String(i+1).padStart(2,'0'),'step-number'),el('span',t(key)));if(i+1===state.step)item.setAttribute('aria-current','step');progress.append(item);}root.append(progress);}
  if(state.step===1){
@@ -191,8 +193,7 @@ async function barberSetup(panel,id){
 async function editBarber(panel,barber){
  const f=el('form',null,'card');input(f,t('name'),'name',barber.name).required=true;input(f,t('description'),'description',barber.description,'textarea');input(f,t('photo'),'photo_url',barber.photo_url,'url');input(f,t('active'),'active',barber.active,'checkbox');input(f,t('online'),'online',barber.online_enabled,'checkbox');
  formSave(f,async d=>{const body={version:barber.version,name:d.get('name'),description:d.get('description'),photo_url:d.get('photo_url')||null,active:d.has('active'),online_enabled:d.has('online')};if(!d.has('active')&&barber.active)return retireBarber(panel,barber,'disable',body);await api('/owner/barbers/'+barber.id,'PATCH',body);await refreshCatalog();panel.replaceChildren();await ownerBarbers(panel);});panel.append(f);
- panel.append(button(t('invite'),async()=>{const result=await api('/owner/barbers/'+barber.id+'/invitation','POST',{});const link=el('a',result.url,'link');link.href=result.url;panel.append(link);}));
- panel.append(button(t('revoke'),async()=>{await api('/owner/barbers/'+barber.id,'PATCH',{version:barber.version,revoke_access:true});panel.replaceChildren();await ownerBarbers(panel);}));
+ invitationCleanup?.();invitationCleanup=mountInvitationPanel({panel,barber,api,t,toast,tg,botUsername:state.config.telegram_bot_username,confirm:askConfirmation});
 }
 async function retireBarber(panel,barber,mode='archive',changes=null){
  const first=await api('/owner/barbers/'+barber.id+'/future-bookings'),snapshot=first.barber;
