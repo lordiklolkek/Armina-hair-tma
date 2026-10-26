@@ -26,4 +26,5 @@ jobs:
       - run: node --check public/app.js
       - run: node --check public/i18n.js
       - run: node --check public/ui.js
+      - run: node --check public/invitations.js
       - run: pnpm build
