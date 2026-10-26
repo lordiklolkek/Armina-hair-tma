@@ -897,3 +897,21 @@ test('renewed barber invitation retains the 900-second single-use contract and i
  const status=await (await request('/api/owner/barbers',1)).json() as Row[];assert.equal(status.find(b=>b.id==='demo-b')!.telegram_id,201);
  assert.equal((await request('/api/owner/barbers/demo-b/invitation',101,'POST',{})).status,403);
 });
+
+
+test('signed account card identity uses the own active barber name even when hidden from public booking',async()=>{
+ await request('/api/me',201);
+ await db.prepare("UPDATE barbers SET telegram_id=201,name='Սեփական վարպետ',online_enabled=0 WHERE id='demo-a'").run();
+ const identity=await (await request('/api/me',201)).json() as Row;
+ assert.equal(identity.barberId,'demo-a');assert.equal(identity.barberName,'Սեփական վարպետ');assert.equal(identity.displayName,'TEST');assert.equal(identity.owner,false);
+ const catalog=await (await request('/api/catalog',null)).json() as Row;assert(!catalog.barbers.some((b:Row)=>b.id==='demo-a'));
+ assert.equal((await request('/api/staff/demo-b/clients',201)).status,403);
+ assert.equal((await (await request('/api/me',101)).json() as Row).barberName,null);
+ await db.prepare("UPDATE barbers SET name='Նոր անուն' WHERE id='demo-a'").run();
+ assert.equal((await (await request('/api/me',201)).json() as Row).barberName,'Նոր անուն');
+ await request('/api/me',1);await db.prepare("UPDATE barbers SET telegram_id=1 WHERE id='demo-a'").run();
+ const owner=await (await request('/api/me',1)).json() as Row;assert.equal(owner.owner,true);assert.equal(owner.barberName,'Նոր անուն');
+ await db.prepare("UPDATE barbers SET active=0 WHERE id='demo-a'").run();
+ const revoked=await (await request('/api/me',1)).json() as Row;assert.equal(revoked.barberId,null);assert.equal(revoked.barberName,null);assert.equal(revoked.owner,true);
+ assert.equal((await request('/api/me',null)).status,401);
+});
