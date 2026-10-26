@@ -72,3 +72,6 @@ Object.assign(words.hy,{invitePanelTitle:'Վարպետի Telegram-ը',telegramLi
 
 words.ru.inviteLinkedHint='Мастер может открыть свой кабинет через бота. Новое приглашение не требуется.';
 words.hy.inviteLinkedHint='Վարպետը կարող է բացել իր սենյակը բոտի միջոցով։ Նոր հրավեր չի պահանջվում։';
+
+Object.assign(words.ru,{signedInMaster:'Вы вошли как мастер',administrator:'Администратор',myCalendar:'Открыть мой календарь'});
+Object.assign(words.hy,{signedInMaster:'Դուք մուտք եք գործել որպես վարպետ',administrator:'Ադմինիստրատոր',myCalendar:'Բացել իմ օրացույցը'});

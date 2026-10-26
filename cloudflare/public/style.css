@@ -949,3 +949,14 @@ button[aria-busy=true]::after {
 .invitation-timer{font-variant-numeric:tabular-nums;color:var(--accent)}
 .invitation-timer[data-expired=true]{color:var(--muted)}
 @media(max-width:380px){.invitation-actions>*{flex-basis:100%}}
+
+/* Server-confirmed account identity, separate from the profile an admin is browsing. */
+.account-card{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:20px 22px;margin:4px 0 24px;border:1px solid rgba(8,201,190,.19);border-radius:24px;background:linear-gradient(120deg,rgba(8,201,190,.07),rgba(21,26,26,.8));min-width:0}
+.account-info{min-width:0;display:grid;gap:7px}
+.account-label{font-size:12px;color:var(--muted)}
+.account-name{font-size:22px;line-height:1.3;overflow-wrap:anywhere}
+.account-badges{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:12px;line-height:1.5}
+.account-linked{color:var(--accent)}
+.account-admin{padding:3px 8px;color:var(--text);background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:999px}
+.account-calendar{flex:none;white-space:normal;text-align:center;max-width:50%;font-size:13px}
+@media(max-width:430px){.account-card{align-items:stretch;flex-direction:column;gap:14px;padding:18px}.account-calendar{max-width:100%;width:100%}}

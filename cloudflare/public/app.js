@@ -30,7 +30,19 @@ function input(form,label,name,value='',type='text'){const id='field-'+crypto.ra
 function select(form,label,name,items,value){const id='select-'+crypto.randomUUID(),l=el('label',label),node=el('select');node.id=id;node.name=name;l.htmlFor=id;for(const [id,text]of items){const option=el('option',text);option.value=id;node.append(option);}if(value!=null)node.value=value;form.append(l,node);return node;}
 function formSave(form,action){const b=el('button',t('save'),'primary');b.type='submit';form.append(b);form.addEventListener('submit',async e=>{e.preventDefault();if(!form.reportValidity())return;b.disabled=true;try{await action(new FormData(form));toast(t('saved'));}catch(error){toast(error.message);}finally{b.disabled=false;}});}
 const heading=(name,copy)=>{root.append(el('h2',name));if(copy)root.append(el('p',copy,'muted'));};
+function renderAccountCard(){
+ const card=$('account-card');card.replaceChildren();
+ const me=state.me;card.hidden=!me?.barberId||!me.barberName;
+ if(card.hidden)return;
+ card.setAttribute('aria-label',t('signedInMaster'));
+ const info=el('div',null,'account-info');info.append(el('span',t('staff'),'account-label'),el('strong',me.barberName,'account-name'));
+ const badges=el('div',null,'account-badges');badges.append(el('span','✓ '+t('telegramLinked'),'account-linked'));
+ if(me.owner)badges.append(el('span',t('administrator'),'account-admin'));info.append(badges);
+ const action=button(t('myCalendar')+' →',()=>{state.view='staff';state.editing=null;state.manual=false;return render();},'secondary account-calendar');
+ card.append(info,action);
+}
 function chrome(){
+ renderAccountCard();
  $('hero').hidden=state.view!=='services'||state.step!==1;
  document.body.dataset.view=state.view;
  $('book-now').textContent=t('bookNow');
