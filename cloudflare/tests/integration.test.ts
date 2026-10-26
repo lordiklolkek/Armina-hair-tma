@@ -883,3 +883,17 @@ test('live webhook welcomes new accounts and notification queue delivers without
  assert.equal(sent.length,1);assert.equal(sent[0].chat_id,999);assert.equal(sent[0].reply_markup.inline_keyboard[0][0].text,'Գրանցվել');
  assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='update:900001'").first<Row>())!.state,'sent');
 });
+
+
+test('renewed barber invitation retains the 900-second single-use contract and invalidates only its predecessor',async()=>{
+ const first=await (await request('/api/owner/barbers/demo-b/invitation',1,'POST',{})).json() as Row;
+ const second=await (await request('/api/owner/barbers/demo-b/invitation',1,'POST',{})).json() as Row;
+ assert.equal(first.expires_in,900);assert.equal(second.expires_in,900);assert.notEqual(first.url,second.url);
+ assert.equal((await db.prepare("SELECT count(*) n FROM invitations WHERE barber_id='demo-b'").first<Row>())!.n,1);
+ const send=async(link:string,update_id:number)=>processWebhook(env,secret,{update_id,message:{chat:{id:201,type:'private'},from:{id:201},text:'/start '+new URL(link).searchParams.get('start')}});
+ await send(first.url,990001);assert.equal((await db.prepare("SELECT telegram_id FROM barbers WHERE id='demo-b'").first<Row>())!.telegram_id,null);
+ await send(second.url,990002);assert.equal((await db.prepare("SELECT telegram_id FROM barbers WHERE id='demo-b'").first<Row>())!.telegram_id,201);
+ await send(second.url,990003);assert.equal((await db.prepare("SELECT count(*) n FROM audit_log WHERE action='invitation.accept'").first<Row>())!.n,1);
+ const status=await (await request('/api/owner/barbers',1)).json() as Row[];assert.equal(status.find(b=>b.id==='demo-b')!.telegram_id,201);
+ assert.equal((await request('/api/owner/barbers/demo-b/invitation',101,'POST',{})).status,403);
+});
